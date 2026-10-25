@@ -1,0 +1,6 @@
+*.apk
+*.aab
+*.jks
+*.keystore
+navysoft.sample.json
+fyne_metadata_init.go

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Манифест «Штурманского помощника».
+  Разрешение только одно — INTERNET (погода Open-Meteo, НАВАРЕА/ПРИП).
+  Доступ к памяти телефона не запрашивается: база SQLite лежит
+  в личной папке приложения. Никаких сертификатов приложение не ставит.
+-->
+<manifest
+	xmlns:android="http://schemas.android.com/apk/res/android"
+	package="ru.navhelper.app"
+	android:versionCode="5"
+	android:versionName="1.0.0">
+
+	<application android:label="Штурман"
+		android:debuggable="false"
+		android:allowBackup="true">
+		<activity android:name="org.golang.app.GoNativeActivity"
+			android:label="Штурман"
+			android:configChanges="orientation|keyboardHidden|uiMode|screenSize"
+			android:exported="true"
+			android:windowSoftInputMode="adjustResize"
+			android:theme="@android:style/Theme.NoTitleBar">
+			<meta-data android:name="android.app.lib_name" android:value="go_______" />
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+	</application>
+
+	<uses-permission android:name="android.permission.INTERNET" />
+</manifest>
