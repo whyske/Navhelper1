@@ -49,6 +49,10 @@ func Run(a fyne.App) {
 	status := widget.NewLabel("Подготовка каталога морских карт…")
 	w.SetContent(container.NewCenter(container.NewVBox(widget.NewProgressBarInfinite(), status)))
 
+	// Подложка превью карт распаковывается в фоне, чтобы первое превью
+	// открылось мгновенно.
+	go func() { _ = charts.PreloadLand() }()
+
 	go func() {
 		n, ierr := charts.EnsureImported(st.DB())
 		fyne.Do(func() {
@@ -76,7 +80,7 @@ func (a *App) build(chartCount int, importErr error) {
 	a.warnings = newWarningsTab(a)
 
 	tabs := container.NewAppTabs(
-		container.NewTabItemWithIcon("Время", theme.HistoryIcon(), newCalcTab(a)),
+		container.NewTabItemWithIcon("Калькулятор", calculatorIcon, newCalcSection(a)),
 		container.NewTabItemWithIcon("Календарь", theme.ListIcon(), newCalendarTab(a)),
 		container.NewTabItemWithIcon("Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)),
 		container.NewTabItemWithIcon("Погода", theme.VisibilityIcon(), a.weather.content),
@@ -157,6 +161,27 @@ func bold(text string) *widget.Label {
 	l := widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	l.Wrapping = fyne.TextWrapWord
 	return l
+}
+
+// fieldRow — строка «Жирная подпись: значение», где значение переносится по
+// словам и не наезжает на подпись. HBox этого не умеет (не ограничивает
+// ширину второго элемента), поэтому используем Border: подпись фиксированной
+// ширины слева, значение занимает всё оставшееся место.
+func fieldRow(label, value string) fyne.CanvasObject {
+	l := widget.NewLabelWithStyle(label+":", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	v := wrapLabel(value)
+	return container.NewBorder(nil, nil, l, nil, v)
+}
+
+// headRow — заголовок карточки с меткой статуса справа (ПРОШЕДШИЙ/СЕГОДНЯ…),
+// без наложения текста друг на друга при длинном заголовке.
+func headRow(title, tag string) fyne.CanvasObject {
+	t := bold(title)
+	if tag == "" {
+		return t
+	}
+	tagL := widget.NewLabelWithStyle("["+tag+"]", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
+	return container.NewBorder(nil, nil, nil, tagL, t)
 }
 
 func errText(err error) string {

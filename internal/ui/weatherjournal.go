@@ -38,12 +38,12 @@ const (
 
 var wjPresets = map[string][2]float64{
 	"Севастополь (Севастопольская бухта)": {44.6166, 33.5254},
-	"Финский залив (Кронштадт)":      {59.95, 29.50},
-	"Кольский залив (Мурманск)":      {69.10, 33.45},
-	"Цемесская бухта (Новороссийск)": {44.68, 37.83},
-	"Владивосток (Амурский залив)":   {43.05, 131.80},
-	"Калининград (Балтийск)":         {54.65, 19.85},
-	"Баренцево море":                 {70.50, 38.00},
+	"Финский залив (Кронштадт)":           {59.95, 29.50},
+	"Кольский залив (Мурманск)":           {69.10, 33.45},
+	"Цемесская бухта (Новороссийск)":      {44.68, 37.83},
+	"Владивосток (Амурский залив)":        {43.05, 131.80},
+	"Калининград (Балтийск)":              {54.65, 19.85},
+	"Баренцево море":                      {70.50, 38.00},
 }
 
 // wjPeriod — одна строка журнала.
@@ -287,10 +287,9 @@ func (t *weatherTab) render(periods []wjPeriod) {
 }
 
 func (t *weatherTab) card(p wjPeriod) fyne.CanvasObject {
-	head := container.NewHBox(bold(p.Title), widget.NewLabel("  ["+p.Label+"]"))
-	rows := []fyne.CanvasObject{head}
+	rows := []fyne.CanvasObject{headRow(p.Title, p.Label)}
 	for _, l := range p.Forecast {
-		rows = append(rows, container.NewHBox(widget.NewLabelWithStyle(l.Label+":", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), wrapLabel(l.Value)))
+		rows = append(rows, fieldRow(l.Label, l.Value))
 	}
 	if p.HasFact {
 		rows = append(rows, widget.NewSeparator())
@@ -300,7 +299,7 @@ func (t *weatherTab) card(p wjPeriod) fyne.CanvasObject {
 		}
 		rows = append(rows, bold(factHead+":"))
 		for _, l := range p.Fact {
-			rows = append(rows, container.NewHBox(widget.NewLabelWithStyle(l.Label+":", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), wrapLabel(l.Value)))
+			rows = append(rows, fieldRow(l.Label, l.Value))
 		}
 		if p.Verdict.Percent >= 0 {
 			pct := widget.NewLabelWithStyle(fmt.Sprintf("Оправдываемость прогноза: %d%%", p.Verdict.Percent), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})

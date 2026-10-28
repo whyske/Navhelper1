@@ -39,6 +39,9 @@ func Open(path string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
+	if err := s.migrateNotes3(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -209,7 +212,7 @@ func (s *Store) ClearCalcHistory() error {
 
 // Note — заметка на конкретный день.
 type Note struct {
-	Day string // YYYY-MM-DD
+	Day  string // YYYY-MM-DD
 	Text string
 	At   time.Time
 }

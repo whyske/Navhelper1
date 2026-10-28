@@ -325,3 +325,37 @@ func dm(v float64, pos, neg string, w int) string {
 	}
 	return fmt.Sprintf("%0*d°%04.1f′%s", w, deg, min, h)
 }
+
+// InBox возвращает листы, пересекающие прямоугольник (для превью «как на
+// navysoft»: соседние листы вокруг выбранного). Слишком мелкие на экране листы
+// (меньше minFrac от ширины окна) и обзорные карты, накрывающие окно целиком,
+// отбрасываются, чтобы не захламлять превью.
+func InBox(db *sql.DB, lonMin, latMin, lonMax, latMax, minFrac float64, limit int) ([]Chart, error) {
+	rows, err := db.Query(`SELECT `+cols+` FROM charts
+		WHERE lat_max > ? AND lat_min < ? AND lon_max > ? AND lon_min < ?
+		  AND NOT (lat_min = 0 AND lat_max = 0)
+		ORDER BY scale DESC`, latMin, latMax, lonMin, lonMax)
+	if err != nil {
+		return nil, err
+	}
+	all, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	w, h := lonMax-lonMin, latMax-latMin
+	var out []Chart
+	for _, c := range all {
+		cw, ch := c.LonMax-c.LonMin, c.LatMax-c.LatMin
+		if cw < w*minFrac && ch < h*minFrac {
+			continue
+		}
+		if c.LonMin <= lonMin && c.LonMax >= lonMax && c.LatMin <= latMin && c.LatMax >= latMax {
+			continue
+		}
+		out = append(out, c)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
