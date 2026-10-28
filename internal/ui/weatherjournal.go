@@ -149,7 +149,7 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 
 	var st forecast.Station
 	{
-		c1, cancel := ctx(20 * time.Second)
+		c1, cancel := ctx(45 * time.Second)
 		s, _ := c.NearestStation(c1, lat, lon)
 		cancel()
 		st = s
@@ -158,7 +158,7 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 	var live, arch map[time.Time]*forecast.Hour
 	var off int
 	{
-		c2, cancel := ctx(20 * time.Second)
+		c2, cancel := ctx(45 * time.Second)
 		h, o, err := c.Live(c2, lat, lon)
 		cancel()
 		if err != nil {
@@ -167,7 +167,7 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 		live, off = h, o
 	}
 	{
-		c3, cancel := ctx(20 * time.Second)
+		c3, cancel := ctx(45 * time.Second)
 		h, _ := c.Archive(c3, lat, lon, daysBack)
 		cancel()
 		arch = h
@@ -175,7 +175,7 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 
 	var sea, seaPrev map[time.Time]*forecast.Hour
 	{
-		c4, cancel := ctx(20 * time.Second)
+		c4, cancel := ctx(45 * time.Second)
 		cur, prev, _ := c.MarineHours(c4, lat, lon, daysBack, 3)
 		cancel()
 		sea, seaPrev = cur, prev
@@ -183,7 +183,7 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 
 	var obs []forecast.Obs
 	if st.ICAO != "" {
-		c5, cancel := ctx(20 * time.Second)
+		c5, cancel := ctx(45 * time.Second)
 		o, _ := c.METAR(c5, st.ICAO, (daysBack+1)*24)
 		cancel()
 		obs = o
