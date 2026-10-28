@@ -31,6 +31,7 @@ type App struct {
 
 // Run открывает базу, строит вкладки и запускает главный цикл.
 func Run(a fyne.App) {
+	a.Settings().SetTheme(marineTheme{})
 	w := a.NewWindow("Штурманский помощник")
 	w.Resize(fyne.NewSize(420, 760))
 
@@ -58,7 +59,7 @@ func Run(a fyne.App) {
 	// Возврат на передний план: обновить погоду и предупреждения, если пора.
 	a.Lifecycle().SetOnEnteredForeground(func() {
 		if app.weather != nil {
-			app.weather.syncAsync(false)
+			app.weather.syncAsync()
 		}
 		if app.warnings != nil {
 			app.warnings.refreshAsync(false)
@@ -86,7 +87,7 @@ func (a *App) build(chartCount int, importErr error) {
 	a.Win.SetContent(tabs)
 
 	// Сбор данных при открытии приложения.
-	a.weather.syncAsync(false)
+	a.weather.syncAsync()
 	a.warnings.refreshAsync(false)
 
 	// Пока приложение открыто — проверка раз в час (в фоне ОС код не исполняет;
@@ -96,7 +97,7 @@ func (a *App) build(chartCount int, importErr error) {
 		defer t.Stop()
 		for range t.C {
 			fyne.Do(func() {
-				a.weather.syncAsync(false)
+				a.weather.syncAsync()
 				a.warnings.refreshAsync(false)
 			})
 		}
