@@ -8,6 +8,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ const (
 )
 
 var wjPresets = map[string][2]float64{
+	"Севастополь (Севастопольская бухта)": {44.6166, 33.5254},
 	"Финский залив (Кронштадт)":      {59.95, 29.50},
 	"Кольский залив (Мурманск)":      {69.10, 33.45},
 	"Цемесская бухта (Новороссийск)": {44.68, 37.83},
@@ -79,7 +81,31 @@ func newWeatherTab(a *App) *weatherTab {
 	refreshBtn := widget.NewButtonWithIcon("Обновить", theme.ViewRefreshIcon(), func() { t.syncAsync() })
 	refreshBtn.Importance = widget.HighImportance
 
-	top := container.NewVBox(t.place, refreshBtn, t.status, widget.NewSeparator())
+	names := make([]string, 0, len(wjPresets))
+	for k := range wjPresets {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	citySel := widget.NewSelect(names, nil)
+	citySel.PlaceHolder = "Выбрать город / акваторию…"
+	if cur := t.st.Setting(wjKeyPlace, wjDefaultName); cur != "" {
+		if _, ok := wjPresets[cur]; ok {
+			citySel.SetSelected(cur)
+		}
+	}
+	citySel.OnChanged = func(s string) {
+		p, ok := wjPresets[s]
+		if !ok {
+			return
+		}
+		_ = t.st.SetSetting(wjKeyPlace, s)
+		_ = t.st.SetSetting(wjKeyLat, fmt.Sprint(p[0]))
+		_ = t.st.SetSetting(wjKeyLon, fmt.Sprint(p[1]))
+		t.updatePlaceLabel()
+		t.syncAsync()
+	}
+
+	top := container.NewVBox(t.place, citySel, refreshBtn, t.status, widget.NewSeparator())
 	scroll := container.NewVScroll(t.box)
 	t.content = container.NewBorder(top, nil, nil, nil, scroll)
 

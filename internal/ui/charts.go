@@ -12,6 +12,8 @@ import (
 )
 
 // newChartsTab — модуль 4: офлайн-поиск по номеру морской карты.
+// При выборе карты (или однозначном совпадении номера) показывается превью
+// листа: береговая линия и красная рамка зоны самой карты.
 func newChartsTab(a *App, count int, importErr error) fyne.CanvasObject {
 	info := wrapLabel(fmt.Sprintf("В каталоге карт: %d. %s", count, charts.Header(a.St.DB())))
 	if importErr != nil {
@@ -19,6 +21,7 @@ func newChartsTab(a *App, count int, importErr error) fyne.CanvasObject {
 	}
 
 	card := wrapLabel("Введите номер карты, например 38174, или часть названия.")
+	preview := container.NewVBox()
 
 	var found []charts.Chart
 	list := widget.NewList(
@@ -29,7 +32,9 @@ func newChartsTab(a *App, count int, importErr error) fyne.CanvasObject {
 			o.(*widget.Label).SetText(fmt.Sprintf("%s  %s  (%s, %d)", c.Number, c.TitleRU, charts.FormatScale(c.Scale), c.Year))
 		},
 	)
-	list.OnSelected = func(i widget.ListItemID) { card.SetText(describeChart(found[i])) }
+	list.OnSelected = func(i widget.ListItemID) {
+		showChart(found[i], card, preview)
+	}
 
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Номер карты или название")
@@ -37,21 +42,24 @@ func newChartsTab(a *App, count int, importErr error) fyne.CanvasObject {
 		q := strings.TrimSpace(entry.Text)
 		found = nil
 		list.UnselectAll()
+		preview.Objects = nil
 		if c, ok := charts.Find(a.St.DB(), q); ok {
 			found = []charts.Chart{c}
-			card.SetText(describeChart(c))
+			showChart(c, card, preview)
 		} else {
 			res, err := charts.Search(a.St.DB(), q, 100)
-			if err != nil {
+			switch {
+			case err != nil:
 				card.SetText(errText(err))
-			} else if len(res) == 0 {
+			case len(res) == 0:
 				card.SetText("Карта «" + q + "» в каталоге не найдена.")
-			} else {
+			default:
 				found = res
 				card.SetText(fmt.Sprintf("Найдено: %d. Выберите карту в списке.", len(res)))
 			}
 		}
 		list.Refresh()
+		preview.Refresh()
 	}
 	entry.OnSubmitted = func(string) { search() }
 	btn := widget.NewButton("Найти", search)
@@ -61,9 +69,17 @@ func newChartsTab(a *App, count int, importErr error) fyne.CanvasObject {
 		bold("Поиск морской карты УНиО"),
 		container.NewBorder(nil, nil, nil, btn, entry),
 		card,
+		preview,
 		widget.NewSeparator(),
 	)
 	return container.NewBorder(top, info, nil, nil, list)
+}
+
+// showChart выводит описание карты и её превью на листе.
+func showChart(c charts.Chart, card *widget.Label, preview *fyne.Container) {
+	card.SetText(describeChart(c))
+	preview.Objects = []fyne.CanvasObject{chartPreview(c)}
+	preview.Refresh()
 }
 
 // describeChart — карточка карты для экрана.
