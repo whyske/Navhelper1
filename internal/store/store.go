@@ -42,9 +42,6 @@ func Open(path string) (*Store, error) {
 	if err := s.migrateNotes3(); err != nil {
 		return nil, err
 	}
-	if err := s.migrateV4(); err != nil {
-		return nil, err
-	}
 	return s, nil
 }
 
