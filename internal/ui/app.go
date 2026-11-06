@@ -27,7 +27,6 @@ type App struct {
 	St  *store.Store
 
 	weather  *weatherTab
-	warnings *warningsTab
 }
 
 // Run открывает базу, строит drawer-меню и запускает главный цикл.
@@ -68,9 +67,6 @@ func Run(a fyne.App) {
 		if app.weather != nil {
 			app.weather.syncAsync()
 		}
-		if app.warnings != nil {
-			app.warnings.refreshAsync(false)
-		}
 	})
 	a.Lifecycle().SetOnStopped(func() { _ = st.Close() })
 
@@ -80,7 +76,6 @@ func Run(a fyne.App) {
 // build создаёт drawer-меню после импорта каталога.
 func (a *App) build(chartCount int, importErr error) {
 	a.weather = newWeatherTab(a)
-	a.warnings = newWarningsTab(a)
 
 	items := []navItem{
 		{"Часы", theme.InfoIcon(), newClockSection(a)},
@@ -88,19 +83,15 @@ func (a *App) build(chartCount int, importErr error) {
 		{"Календарь", theme.ListIcon(), newCalendarTab(a)},
 		{"Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)},
 		{"Погода", theme.VisibilityIcon(), a.weather.content},
-		{"ИМ УНиО", theme.WarningIcon(), a.warnings.content},
-		{"Настройки", theme.SettingsIcon(), newSettingsTab(a)},
 	}
 	root := newNavRoot(items, "NavHelper")
 	a.Win.SetContent(root)
 
 	// Сбор данных при открытии приложения.
 	a.weather.syncAsync()
-	a.warnings.refreshAsync(false)
 
 	// Уведомления: восход/заход солнца, новый каталог карт, новые извещения,
 	// напоминания из календаря. Проверка идёт, пока приложение открыто.
-	a.startNotifications(chartCount)
 
 	// Пока приложение открыто — проверка раз в час (в фоне ОС код не исполняется;
 	// пропущенные дни погоды дозаполняются через past_days при следующем запуске).
@@ -110,7 +101,6 @@ func (a *App) build(chartCount int, importErr error) {
 		for range t.C {
 			fyne.Do(func() {
 				a.weather.syncAsync()
-				a.warnings.refreshAsync(false)
 			})
 		}
 	}()
