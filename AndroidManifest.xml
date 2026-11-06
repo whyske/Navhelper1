@@ -1,21 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Манифест «Штурманского помощника».
-  Разрешение только одно — INTERNET (погода Open-Meteo, НАВАРЕА/ПРИП).
+  Манифест «NavHelper».
+  Разрешения: INTERNET (погода Open-Meteo, НАВАРЕА/ПРИП/ИМ УНиО), POST_NOTIFICATIONS
+  (локальные уведомления: восход/заход солнца, новые карты, новые извещения,
+  прогноз погоды, напоминания из календаря).
   Доступ к памяти телефона не запрашивается: база SQLite лежит
   в личной папке приложения. Никаких сертификатов приложение не ставит.
 -->
 <manifest
 	xmlns:android="http://schemas.android.com/apk/res/android"
 	package="ru.navhelper.app"
-	android:versionCode="30"
-	android:versionName="3.0.0">
+	android:versionCode="40"
+	android:versionName="4.0.0">
 
-	<application android:label="Штурман"
+	<application android:label="NavHelper"
 		android:debuggable="false"
 		android:allowBackup="true">
 		<activity android:name="org.golang.app.GoNativeActivity"
-			android:label="Штурман"
+			android:label="NavHelper"
 			android:configChanges="orientation|keyboardHidden|uiMode|screenSize"
 			android:exported="true"
 			android:windowSoftInputMode="adjustResize"
@@ -29,4 +31,5 @@
 	</application>
 
 	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

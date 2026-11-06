@@ -17,9 +17,9 @@ func TestCalNotesV3(t *testing.T) {
 	if ISOWeekday(wed) != 3 {
 		t.Fatalf("weekday %d", ISOWeekday(wed))
 	}
-	s.AddDayNote("2026-10-28", "Отход 08:00", "#E53935")
-	s.AddDayNote("2026-10-28", "Получить карты", "#43A047")
-	s.AddWeeklyNote(1, "2026-10-26", "Учебная тревога", "#FDD835") // каждый понедельник
+	s.AddDayNote("2026-10-28", "Отход 08:00", "#E53935", false)
+	s.AddDayNote("2026-10-28", "Получить карты", "#43A047", false)
+	s.AddWeeklyNote(1, "2026-10-26", "Учебная тревога", "#FDD835", false) // каждый понедельник
 
 	on, _ := s.NotesOn(wed)
 	if len(on) != 2 {
@@ -78,7 +78,7 @@ func TestWeeklySkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	id, _ := s.AddWeeklyNote(1, "2026-10-26", "Вахта", "#E53935")
+	id, _ := s.AddWeeklyNote(1, "2026-10-26", "Вахта", "#E53935", false)
 	m1 := time.Date(2026, 11, 2, 0, 0, 0, 0, time.Local)
 	m2 := time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
 	if err := s.SkipWeeklyOn(id, "2026-11-02"); err != nil {

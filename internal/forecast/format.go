@@ -128,7 +128,71 @@ func FactLines(f Fact) []Line {
 	if len(t) > 0 {
 		out = append(out, Line{"t воздуха", strings.Join(t, ", ")})
 	}
+	if f.HasWater {
+		out = append(out, Line{"t воды", FmtTemp(f.WaterT)})
+	}
 	return out
+}
+
+// FactSummary — фактическая погода одной строкой в формате судового журнала:
+// «Ветер СЗ 4–6 м/с. Волнение 2 балла. Видимость 50 кбт. Переменная
+// облачность. t воздуха +23 °C, t воды +19 °C. Оправдываемость 90%.»
+func FactSummary(f Fact, verdict Verdict) string {
+	var parts []string
+	if f.HasWind {
+		dir := "переменный"
+		if f.HasDir && f.WindHi >= 2 {
+			dir = RhumbShort(f.Dir)
+		}
+		w := fmt.Sprintf("Ветер %s %d–%d м/с", dir, f.WindLo, f.WindHi)
+		if f.HasGust {
+			w += fmt.Sprintf(", порывы до %d м/с", f.GustHi)
+		}
+		parts = append(parts, w)
+	}
+	if f.HasSea {
+		parts = append(parts, fmt.Sprintf("Волнение %d балла", f.SeaHi))
+	}
+	if f.HasVis {
+		parts = append(parts, "Видимость "+FmtCab(f.VisMin))
+	}
+	if f.Obs > 0 {
+		w := ""
+		if f.HasCloud {
+			w = capFirst(CloudText(f.Cloud))
+		}
+		var ps []string
+		for _, p := range f.Phens {
+			ps = append(ps, p.Text)
+		}
+		if len(ps) > 0 {
+			if w != "" {
+				w += ", "
+			}
+			w += strings.Join(ps, ", ")
+		}
+		if w == "" {
+			w = "Без явлений"
+		}
+		parts = append(parts, w)
+	}
+	if f.HasDay && f.HasNight {
+		parts = append(parts, "t воздуха ночью "+FmtTemp(f.NightLo)+", днём "+FmtTemp(f.DayHi))
+	} else if f.HasDay {
+		parts = append(parts, "t воздуха "+FmtTemp(f.DayHi))
+	} else if f.HasNight {
+		parts = append(parts, "t воздуха "+FmtTemp(f.NightLo))
+	}
+	if f.HasWater {
+		parts = append(parts, "t воды "+FmtTemp(f.WaterT))
+	}
+	if verdict.Percent >= 0 {
+		parts = append(parts, fmt.Sprintf("Оправдываемость прогноза %d%%", verdict.Percent))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ". ") + "."
 }
 
 func fmtM(m float64) string {

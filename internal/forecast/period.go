@@ -87,6 +87,9 @@ type Fact struct {
 	SeaHi      int
 	WaveHi     float64
 	HasSea     bool
+	WaterT     float64 // температура воды, °C (морская модель/архив)
+	HasWater   bool
+	Source     string // «METAR <ICAO>» или «архив ERA5»
 }
 
 // isDay — дневные часы по местному времени: 09:00–20:59.
@@ -499,4 +502,112 @@ func phenList(ps []Phen) string {
 		}
 	}
 	return strings.Join(s, ", ")
+}
+
+// SummarizeObserved сворачивает фактическую погоду из архива (реанализ ERA5)
+// за период: ветер, порывы, видимость, явления, температура воздуха и воды,
+// волнение. Используется, когда METAR ближайшего аэропорта недоступен —
+// раньше в этом случае в «Факте» оставалось только волнение.
+func SummarizeObserved(hours []Hour, sea []Hour, start, end time.Time, loc *time.Location) Fact {
+	f := Fact{Start: start, End: end}
+	var dirs, sps, gusts, dayT, nightT, waves, water []float64
+	clouds := map[int]int{}
+	phens := map[string]Phen{}
+	minVis := math.Inf(1)
+	seen := 0
+
+	for _, h := range hours {
+		if !inPeriod(h.T, start, end) {
+			continue
+		}
+		seen++
+		if h.HasWind {
+			sps = append(sps, h.Speed)
+			dirs = append(dirs, h.Dir)
+		}
+		if h.HasGust {
+			gusts = append(gusts, h.Gust)
+		}
+		if h.HasVis {
+			minVis = math.Min(minVis, h.VisM)
+		}
+		if h.HasCode {
+			cl, ph := WMO(h.Code)
+			clouds[cl]++
+			if ph != nil {
+				if e, ok := phens[ph.Key]; !ok || ph.Severity > e.Severity {
+					phens[ph.Key] = *ph
+				}
+			}
+		}
+		if h.HasTemp {
+			if isDay(h.T, loc) {
+				dayT = append(dayT, h.Temp)
+			} else {
+				nightT = append(nightT, h.Temp)
+			}
+		}
+		if h.HasWater {
+			water = append(water, h.Water)
+		}
+	}
+
+	total := end.Sub(start).Hours()
+	if total > 0 {
+		f.Coverage = math.Min(1, float64(seen)/total)
+	}
+	if len(sps) > 0 {
+		lo, hi := minMax(sps)
+		f.WindLo, f.WindHi, f.HasWind = int(math.Floor(lo)), int(math.Ceil(hi)), true
+		if d, ok := VectorMeanDir(dirs, sps); ok {
+			f.Dir, f.HasDir = d, true
+		}
+	}
+	if len(gusts) > 0 {
+		_, g := minMax(gusts)
+		f.GustHi, f.HasGust = int(math.Round(g)), true
+	}
+	if !math.IsInf(minVis, 1) {
+		f.VisMin, f.HasVis = VisCables(minVis), true
+	}
+	if len(clouds) > 0 {
+		best, bn := 0, -1
+		for c, k := range clouds {
+			if k > bn || (k == bn && c > best) {
+				best, bn = c, k
+			}
+		}
+		f.Cloud, f.HasCloud = best, true
+	}
+	for _, p := range phens {
+		f.Phens = append(f.Phens, p)
+	}
+	sort.Slice(f.Phens, func(i, j int) bool { return f.Phens[i].Severity > f.Phens[j].Severity })
+	if len(dayT) > 0 {
+		f.DayLo, f.DayHi = minMax(dayT)
+		f.HasDay = true
+	}
+	if len(nightT) > 0 {
+		f.NightLo, f.NightHi = minMax(nightT)
+		f.HasNight = true
+	}
+	for _, h := range sea {
+		if inPeriod(h.T, start, end) && h.HasWave {
+			waves = append(waves, h.Wave)
+		}
+		if inPeriod(h.T, start, end) && h.HasWater {
+			water = append(water, h.Water)
+		}
+	}
+	if len(waves) > 0 {
+		_, hi := minMax(waves)
+		f.WaveHi, f.SeaHi, f.HasSea = hi, SeaState(hi), true
+	}
+	if len(water) > 0 {
+		f.WaterT, f.HasWater = Percentile(water, 50), true
+	}
+	// «Наблюдений» здесь — число часов с данными; нужно, чтобы блок «Факт»
+	// и расчёт оправдываемости вообще отрисовались.
+	f.Obs = seen
+	return f
 }

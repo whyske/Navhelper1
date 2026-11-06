@@ -72,8 +72,10 @@ func (p proj) xy(lon, lat float64) (float32, float32) {
 		float32((p.y0 - lat) / (p.v.LatMax - p.v.LatMin) * p.h)
 }
 
-// RenderPreview рисует превью: море, сушу, соседние листы и выбранный лист.
-func RenderPreview(dst *image.RGBA, v Viewport, sel Chart, near []Chart) {
+// RenderPreview рисует превью: море, сушу и выбранный лист карты.
+// Соседние листы каталога намеренно не рисуются — они перекрывали карту
+// и делали превью нечитаемым (замечание к версии 3.0).
+func RenderPreview(dst *image.RGBA, v Viewport, sel Chart) {
 	w, h := dst.Bounds().Dx(), dst.Bounds().Dy()
 	draw.Draw(dst, dst.Bounds(), image.NewUniform(PreviewSea), image.Point{}, draw.Src)
 
@@ -99,10 +101,7 @@ func RenderPreview(dst *image.RGBA, v Viewport, sel Chart, near []Chart) {
 		strokeRings(dst, p, rings, PreviewCoast, 1.0)
 	}
 
-	// Соседние листы каталога.
-	for _, c := range near {
-		fillSheet(dst, v, c, PreviewSheet, PreviewSheetE, 1.0)
-	}
+	// Только сам выбранный лист.
 	fillSheet(dst, v, sel, PreviewSel, PreviewSelE, 2.2)
 	cornerMarks(dst, v, sel, PreviewSelE)
 }

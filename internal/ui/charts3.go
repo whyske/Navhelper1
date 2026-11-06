@@ -29,10 +29,9 @@ func chartPreview(db *sql.DB, c charts.Chart) fyne.CanvasObject {
 		l.Importance = widget.LowImportance
 		return l
 	}
-	v := charts.FitView(c, previewW, previewH, 0.45)
+	v := charts.FitView(c, previewW, previewH, 0.12)
 	img := image.NewRGBA(image.Rect(0, 0, previewW, previewH))
-	near, _ := charts.InBox(db, v.LonMin, v.LatMin, v.LonMax, v.LatMax, 0.18, 24)
-	charts.RenderPreview(img, v, c, near)
+	charts.RenderPreview(img, v, c)
 
 	pic := canvas.NewImageFromImage(img)
 	pic.FillMode = canvas.ImageFillContain
@@ -40,7 +39,7 @@ func chartPreview(db *sql.DB, c charts.Chart) fyne.CanvasObject {
 	pic.ScaleMode = canvas.ImageScaleSmooth
 	pic.CornerRadius = 8
 
-	cap := wrapLabel("Синим выделен лист " + c.Number + "; голубые прямоугольники — соседние листы каталога.")
+	cap := wrapLabel("Синим выделен лист " + c.Number + ".")
 	cap.Importance = widget.LowImportance
 	osm := widget.NewLabel("Береговая линия © участники OpenStreetMap (ODbL)")
 	osm.Importance = widget.LowImportance

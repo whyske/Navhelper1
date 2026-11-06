@@ -368,19 +368,25 @@ func noteRow(n store.CalNote, sub string, onEdit, onDelete func()) fyne.CanvasOb
 // noteDialog — форма заметки: текст, цвет и (для новой заметки) режим повтора.
 // weekday: 0 — показать выбор «только этот день / каждый <день недели>».
 func noteDialog(a *App, title string, day time.Time, n *store.CalNote, allowRepeat bool,
-	onSave func(text, color string, weekly bool)) {
+	onSave func(text, color string, weekly, notify bool)) {
 	entry := widget.NewMultiLineEntry()
 	entry.Wrapping = fyne.TextWrapWord
 	entry.SetMinRowsVisible(4)
 	entry.SetPlaceHolder("Текст заметки")
 	initColor := store.DefaultNoteColor
+	notifyOn := false
 	if n != nil {
 		entry.SetText(n.Text)
 		initColor = n.Color
+		notifyOn = n.Notify
 	}
 	picker := newColorPicker(a.Win, initColor)
+	notifyChk := widget.NewCheck("Уведомлять об этой заметке", func(bool) {})
+	notifyChk.SetChecked(notifyOn)
 
-	items := []fyne.CanvasObject{entry, widget.NewLabelWithStyle("Цвет:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), picker}
+	items := []fyne.CanvasObject{entry,
+		widget.NewLabelWithStyle("Цвет:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), picker,
+		notifyChk}
 	var repeat *widget.RadioGroup
 	if allowRepeat {
 		wd := store.ISOWeekday(day)
@@ -401,7 +407,7 @@ func noteDialog(a *App, title string, day time.Time, n *store.CalNote, allowRepe
 			return
 		}
 		weekly := repeat != nil && repeat.Selected == repeat.Options[1]
-		onSave(txt, picker.value, weekly)
+		onSave(txt, picker.value, weekly, notifyChk.Checked)
 	}, a.Win)
 	d.Resize(fyne.NewSize(380, 460))
 	d.Show()
@@ -438,8 +444,8 @@ func notesView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 			}
 			listBox.Add(noteRow(n, sub,
 				func() {
-					noteDialog(a, "Изменить заметку", selected, &n, false, func(text, col string, _ bool) {
-						_ = a.St.UpdateCalNote(n.ID, text, col)
+					noteDialog(a, "Изменить заметку", selected, &n, false, func(text, col string, _, notify bool) {
+						_ = a.St.UpdateCalNote(n.ID, text, col, notify)
 						refresh()
 						cal.Refresh()
 						onChanged()
@@ -487,12 +493,12 @@ func notesView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 
 	add := widget.NewButtonWithIcon("Добавить заметку", theme.ContentAddIcon(), func() {
 		noteDialog(a, "Заметка на "+selected.Format("02.01.2006"), selected, nil, true,
-			func(text, col string, weekly bool) {
+			func(text, col string, weekly, notify bool) {
 				var err error
 				if weekly {
-					_, err = a.St.AddWeeklyNote(store.ISOWeekday(selected), selected.Format("2006-01-02"), text, col)
+					_, err = a.St.AddWeeklyNote(store.ISOWeekday(selected), selected.Format("2006-01-02"), text, col, notify)
 				} else {
-					_, err = a.St.AddDayNote(selected.Format("2006-01-02"), text, col)
+					_, err = a.St.AddDayNote(selected.Format("2006-01-02"), text, col, notify)
 				}
 				if err != nil {
 					dialog.ShowError(err, a.Win)
@@ -547,8 +553,8 @@ func weekdaysView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 			}
 			listBox.Add(noteRow(n, sub,
 				func() {
-					noteDialog(a, "Изменить заметку", from, &n, false, func(text, col string, _ bool) {
-						_ = a.St.UpdateCalNote(n.ID, text, col)
+					noteDialog(a, "Изменить заметку", from, &n, false, func(text, col string, _, notify bool) {
+						_ = a.St.UpdateCalNote(n.ID, text, col, notify)
 						refresh()
 						onChanged()
 					})
@@ -583,8 +589,8 @@ func weekdaysView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 		// Начинаем с ближайшего такого дня недели (сегодня, если совпадает).
 		today := dateOnly(time.Now())
 		start := today.AddDate(0, 0, (cur-store.ISOWeekday(today)+7)%7)
-		noteDialog(a, "Заметка: "+weekdaysEvery[cur-1], start, nil, false, func(text, col string, _ bool) {
-			if _, err := a.St.AddWeeklyNote(cur, today.Format("2006-01-02"), text, col); err != nil {
+		noteDialog(a, "Заметка: "+weekdaysEvery[cur-1], start, nil, false, func(text, col string, _, notify bool) {
+			if _, err := a.St.AddWeeklyNote(cur, today.Format("2006-01-02"), text, col, notify); err != nil {
 				dialog.ShowError(err, a.Win)
 			}
 			refresh()

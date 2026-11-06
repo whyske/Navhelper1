@@ -418,3 +418,97 @@ func (c *Client) getRaw(ctx context.Context, u string) ([]byte, error) {
 	}
 	return body, nil
 }
+
+// Observed — фактическая погода за прошедшие дни из архива Open-Meteo
+// (реанализ ERA5 — это наблюдённые условия, а не прогноз). Используется для
+// блока «Факт»: ветер, видимость, погода, температура воздуха.
+//
+// Видимости в архиве ERA5 нет, поэтому она добирается из прогнозного API с
+// past_days — это лучшее, что доступно открыто; в интерфейсе она помечается
+// как справочная. days — сколько суток назад запрашивать (1..30).
+func (c *Client) Observed(ctx context.Context, lat, lon float64, days int) (map[time.Time]*Hour, error) {
+	if days < 1 {
+		days = 1
+	}
+	if days > 30 {
+		days = 30
+	}
+	end := time.Now().UTC().AddDate(0, 0, -1)
+	start := end.AddDate(0, 0, -(days - 1))
+
+	q := pointQuery(lat, lon)
+	q.Set("start_date", start.Format("2006-01-02"))
+	q.Set("end_date", end.Format("2006-01-02"))
+	q.Set("hourly", "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,cloud_cover")
+	q.Set("wind_speed_unit", "ms")
+
+	var r omHourly
+	if err := c.getJSON(ctx, "https://archive-api.open-meteo.com/v1/archive?"+q.Encode(), &r); err != nil {
+		return nil, err
+	}
+	ts, err := r.times()
+	if err != nil {
+		return nil, err
+	}
+	sp := r.floats("wind_speed_10m")
+	dr := r.floats("wind_direction_10m")
+	gu := r.floats("wind_gusts_10m")
+	wc := r.floats("weather_code")
+	tt := r.floats("temperature_2m")
+
+	out := map[time.Time]*Hour{}
+	for i, t := range ts {
+		h := &Hour{T: t}
+		if s, ok1 := at(sp, i); ok1 {
+			if d, ok2 := at(dr, i); ok2 {
+				h.Speed, h.Dir, h.HasWind = s, d, true
+			}
+		}
+		if g, ok := at(gu, i); ok {
+			h.Gust, h.HasGust = g, true
+		}
+		if code, ok := at(wc, i); ok {
+			h.Code, h.HasCode = int(code), true
+		}
+		if v, ok := at(tt, i); ok {
+			h.Temp, h.HasTemp = v, true
+		}
+		if h.HasWind || h.HasCode || h.HasTemp {
+			out[t] = h
+		}
+	}
+	// Видимость: в архиве её нет — берём из прогнозного API за те же сутки.
+	if vis, err := c.visibilityHistory(ctx, lat, lon, days); err == nil {
+		for t, v := range vis {
+			if h, ok := out[t]; ok {
+				h.VisM, h.HasVis = v, true
+			}
+		}
+	}
+	return out, nil
+}
+
+// visibilityHistory — видимость за прошедшие сутки из прогнозного API
+// (past_days). Отдельный запрос, потому что в архиве ERA5 видимости нет.
+func (c *Client) visibilityHistory(ctx context.Context, lat, lon float64, days int) (map[time.Time]float64, error) {
+	q := pointQuery(lat, lon)
+	q.Set("hourly", "visibility")
+	q.Set("past_days", fmt.Sprint(days))
+	q.Set("forecast_days", "1")
+	var r omHourly
+	if err := c.getJSON(ctx, "https://api.open-meteo.com/v1/forecast?"+q.Encode(), &r); err != nil {
+		return nil, err
+	}
+	ts, err := r.times()
+	if err != nil {
+		return nil, err
+	}
+	vi := r.floats("visibility")
+	out := map[time.Time]float64{}
+	for i, t := range ts {
+		if v, ok := at(vi, i); ok {
+			out[t] = v
+		}
+	}
+	return out, nil
+}

@@ -41,6 +41,7 @@ type CalNote struct {
 	From    string // еженедельная: с какой даты действует
 	Text    string
 	Color   string // "#RRGGBB"
+	Notify  bool   // показывать напоминание в уведомлениях
 	At      time.Time
 }
 
@@ -101,24 +102,26 @@ func scanCal(rows *sql.Rows) ([]CalNote, error) {
 	for rows.Next() {
 		var n CalNote
 		var ts int64
-		if err := rows.Scan(&n.ID, &n.Day, &n.Weekday, &n.From, &n.Text, &n.Color, &ts); err != nil {
+		var notify int
+		if err := rows.Scan(&n.ID, &n.Day, &n.Weekday, &n.From, &n.Text, &n.Color, &notify, &ts); err != nil {
 			return nil, err
 		}
+		n.Notify = notify != 0
 		n.At = time.Unix(ts, 0)
 		out = append(out, n)
 	}
 	return out, rows.Err()
 }
 
-const calCols = `id, day, weekday, from_day, text, color, created_at`
+const calCols = `id, day, weekday, from_day, text, color, notify, created_at`
 
 // AddDayNote добавляет разовую заметку на дату.
-func (s *Store) AddDayNote(day, text, color string) (int64, error) {
+func (s *Store) AddDayNote(day, text, color string, notify bool) (int64, error) {
 	if color == "" {
 		color = DefaultNoteColor
 	}
-	r, err := s.db.Exec(`INSERT INTO cal_notes(day, weekday, from_day, text, color, created_at)
-		VALUES(?,0,'',?,?,?)`, day, text, color, time.Now().Unix())
+	r, err := s.db.Exec(`INSERT INTO cal_notes(day, weekday, from_day, text, color, notify, created_at)
+		VALUES(?,0,'',?,?,?,?)`, day, text, color, b2i(notify), time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -126,15 +129,15 @@ func (s *Store) AddDayNote(day, text, color string) (int64, error) {
 }
 
 // AddWeeklyNote добавляет заметку на день недели (1..7), действующую с from.
-func (s *Store) AddWeeklyNote(weekday int, from, text, color string) (int64, error) {
+func (s *Store) AddWeeklyNote(weekday int, from, text, color string, notify bool) (int64, error) {
 	if weekday < 1 || weekday > 7 {
 		return 0, fmt.Errorf("неверный день недели %d", weekday)
 	}
 	if color == "" {
 		color = DefaultNoteColor
 	}
-	r, err := s.db.Exec(`INSERT INTO cal_notes(day, weekday, from_day, text, color, created_at)
-		VALUES('',?,?,?,?,?)`, weekday, from, text, color, time.Now().Unix())
+	r, err := s.db.Exec(`INSERT INTO cal_notes(day, weekday, from_day, text, color, notify, created_at)
+		VALUES('',?,?,?,?,?,?)`, weekday, from, text, color, b2i(notify), time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -142,8 +145,9 @@ func (s *Store) AddWeeklyNote(weekday int, from, text, color string) (int64, err
 }
 
 // UpdateCalNote меняет текст и цвет заметки.
-func (s *Store) UpdateCalNote(id int64, text, color string) error {
-	_, err := s.db.Exec(`UPDATE cal_notes SET text = ?, color = ? WHERE id = ?`, text, color, id)
+func (s *Store) UpdateCalNote(id int64, text, color string, notify bool) error {
+	_, err := s.db.Exec(`UPDATE cal_notes SET text = ?, color = ?, notify = ? WHERE id = ?`,
+		text, color, b2i(notify), id)
 	return err
 }
 

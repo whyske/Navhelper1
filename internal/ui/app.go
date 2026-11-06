@@ -1,5 +1,6 @@
-// Package ui — интерфейс «Личного штурманского помощника» на Fyne.
-// Все модули работают с одной базой SQLite (store.Store).
+// Package ui — интерфейс «NavHelper» на Fyne.
+// Боковое выезжающее меню (drawer), разделы: Часы, Калькулятор, Календарь,
+// Карты, Погода, ИМ УНиО, Настройки. Все модули работают с одной базой SQLite.
 package ui
 
 import (
@@ -29,10 +30,10 @@ type App struct {
 	warnings *warningsTab
 }
 
-// Run открывает базу, строит вкладки и запускает главный цикл.
+// Run открывает базу, строит drawer-меню и запускает главный цикл.
 func Run(a fyne.App) {
 	a.Settings().SetTheme(marineTheme{})
-	w := a.NewWindow("Штурманский помощник")
+	w := a.NewWindow("NavHelper")
 	w.Resize(fyne.NewSize(420, 760))
 
 	dbPath := storageDir(a)
@@ -46,8 +47,10 @@ func Run(a fyne.App) {
 	app := &App{FA: a, Win: w, St: st}
 
 	// Пока каталог карт импортируется (первый запуск), показываем заставку.
-	status := widget.NewLabel("Подготовка каталога морских карт…")
-	w.SetContent(container.NewCenter(container.NewVBox(widget.NewProgressBarInfinite(), status)))
+	w.SetContent(container.NewCenter(container.NewVBox(
+		widget.NewProgressBarInfinite(),
+		widget.NewLabel("Подготовка каталога морских карт…"),
+	)))
 
 	// Подложка превью карт распаковывается в фоне, чтобы первое превью
 	// открылось мгновенно.
@@ -74,27 +77,32 @@ func Run(a fyne.App) {
 	w.ShowAndRun()
 }
 
-// build создаёт вкладки после импорта каталога.
+// build создаёт drawer-меню после импорта каталога.
 func (a *App) build(chartCount int, importErr error) {
 	a.weather = newWeatherTab(a)
 	a.warnings = newWarningsTab(a)
 
-	tabs := container.NewAppTabs(
-		container.NewTabItemWithIcon("Калькулятор", calculatorIcon, newCalcSection(a)),
-		container.NewTabItemWithIcon("Календарь", theme.ListIcon(), newCalendarTab(a)),
-		container.NewTabItemWithIcon("Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)),
-		container.NewTabItemWithIcon("Погода", theme.VisibilityIcon(), a.weather.content),
-		container.NewTabItemWithIcon("ИМ", theme.WarningIcon(), a.warnings.content),
-		container.NewTabItemWithIcon("Настр.", theme.SettingsIcon(), newSettingsTab(a)),
-	)
-	tabs.SetTabLocation(container.TabLocationBottom)
-	a.Win.SetContent(tabs)
+	items := []navItem{
+		{"Часы", theme.InfoIcon(), newClockSection(a)},
+		{"Калькулятор", calculatorIcon, newCalcSection(a)},
+		{"Календарь", theme.ListIcon(), newCalendarTab(a)},
+		{"Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)},
+		{"Погода", theme.VisibilityIcon(), a.weather.content},
+		{"ИМ УНиО", theme.WarningIcon(), a.warnings.content},
+		{"Настройки", theme.SettingsIcon(), newSettingsTab(a)},
+	}
+	root := newNavRoot(items, "NavHelper")
+	a.Win.SetContent(root)
 
 	// Сбор данных при открытии приложения.
 	a.weather.syncAsync()
 	a.warnings.refreshAsync(false)
 
-	// Пока приложение открыто — проверка раз в час (в фоне ОС код не исполняет;
+	// Уведомления: восход/заход солнца, новый каталог карт, новые извещения,
+	// напоминания из календаря. Проверка идёт, пока приложение открыто.
+	a.startNotifications(chartCount)
+
+	// Пока приложение открыто — проверка раз в час (в фоне ОС код не исполняется;
 	// пропущенные дни погоды дозаполняются через past_days при следующем запуске).
 	go func() {
 		t := time.NewTicker(time.Hour)
@@ -164,9 +172,7 @@ func bold(text string) *widget.Label {
 }
 
 // fieldRow — строка «Жирная подпись: значение», где значение переносится по
-// словам и не наезжает на подпись. HBox этого не умеет (не ограничивает
-// ширину второго элемента), поэтому используем Border: подпись фиксированной
-// ширины слева, значение занимает всё оставшееся место.
+// словам и оставляет справа немного места для кнопок (если таковые есть).
 func fieldRow(label, value string) fyne.CanvasObject {
 	l := widget.NewLabelWithStyle(label+":", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	v := wrapLabel(value)
@@ -184,6 +190,14 @@ func headRow(title, tag string) fyne.CanvasObject {
 	return container.NewBorder(nil, nil, nil, tagL, t)
 }
 
+// errText — текст ошибки для вывода пользователю.
 func errText(err error) string {
-	return fmt.Sprintf("Ошибка: %v", err)
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) > 300 {
+		s = s[:300] + "…"
+	}
+	return fmt.Sprintf("⚠ Ошибка: %s", s)
 }

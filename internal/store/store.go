@@ -42,6 +42,9 @@ func Open(path string) (*Store, error) {
 	if err := s.migrateNotes3(); err != nil {
 		return nil, err
 	}
+	if err := s.migrateV4(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -385,6 +388,8 @@ type WarningRow struct {
 	Title     string
 	Body      string
 	Source    string
+	Region    string
+	URL       string
 	FetchedAt time.Time
 }
 
@@ -403,12 +408,13 @@ func (s *Store) SaveWarnings(source string, list []WarningRow) error {
 	for _, w := range list {
 		key := w.Area + "/" + w.Number + "/" + fmt.Sprint(w.Year)
 		if _, err := tx.Exec(
-			`INSERT INTO warnings(key, area, number, year, title, body, source, fetched_at)
-			 VALUES(?,?,?,?,?,?,?,?)
+			`INSERT INTO warnings(key, area, number, year, title, body, source, region, url, fetched_at)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(key) DO UPDATE SET
 				title = excluded.title, body = excluded.body,
-				source = excluded.source, fetched_at = excluded.fetched_at`,
-			key, w.Area, w.Number, w.Year, w.Title, w.Body, source, now); err != nil {
+				source = excluded.source, region = excluded.region,
+				url = excluded.url, fetched_at = excluded.fetched_at`,
+			key, w.Area, w.Number, w.Year, w.Title, w.Body, source, w.Region, w.URL, now); err != nil {
 			return err
 		}
 	}
@@ -418,7 +424,7 @@ func (s *Store) SaveWarnings(source string, list []WarningRow) error {
 // Warnings возвращает сохранённые предупреждения (свежие сверху).
 func (s *Store) Warnings() ([]WarningRow, error) {
 	rows, err := s.db.Query(
-		`SELECT key, area, number, year, title, body, source, fetched_at
+		`SELECT key, area, number, year, title, body, source, region, url, fetched_at
 		 FROM warnings ORDER BY year DESC, number DESC`)
 	if err != nil {
 		return nil, err
@@ -429,7 +435,7 @@ func (s *Store) Warnings() ([]WarningRow, error) {
 		var w WarningRow
 		var ts int64
 		if err := rows.Scan(&w.Key, &w.Area, &w.Number, &w.Year, &w.Title,
-			&w.Body, &w.Source, &ts); err != nil {
+			&w.Body, &w.Source, &w.Region, &w.URL, &ts); err != nil {
 			return nil, err
 		}
 		w.FetchedAt = time.Unix(ts, 0)

@@ -1,4 +1,5 @@
-// warncheck — консольная проверка источников предупреждений.
+// warncheck — консольная проверка источников навигационных предупреждений
+// и извещений мореплавателям (НАВАРЕА, ПРИП, НАВИП).
 package main
 
 import (
@@ -10,14 +11,24 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	for _, r := range navwarn.NewClient().FetchAll(ctx, navwarn.DefaultSources) {
-		fmt.Printf("%s: err=%v, предупреждений=%d\n", r.Source.Name, r.Err, len(r.Warnings))
-		for i, w := range r.Warnings {
-			if i < 3 {
-				fmt.Printf("   %s | %s | отмена %v\n", w.ID(), w.Title, w.CancelAt)
-			}
+	list, errs := navwarn.NewClient().FetchAll(ctx)
+	for _, e := range errs {
+		fmt.Println("ошибка источника:", e)
+	}
+	byRegion := map[string]int{}
+	for _, w := range list {
+		byRegion[w.Region]++
+	}
+	fmt.Printf("всего предупреждений: %d\n", len(list))
+	for k, v := range byRegion {
+		fmt.Printf("  регион %-8s %d\n", k, v)
+	}
+	for i, w := range list {
+		if i >= 10 {
+			break
 		}
+		fmt.Printf("   %-24s | %s\n", w.ID(), w.Title)
 	}
 }

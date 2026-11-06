@@ -53,6 +53,7 @@ type wjPeriod struct {
 	Forecast []forecast.Line
 	HasFact  bool
 	Fact     []forecast.Line
+	FactText string // факт одной строкой в формате судового журнала
 	Station  string
 	Verdict  forecast.Verdict
 }
@@ -122,12 +123,12 @@ func (t *weatherTab) updatePlaceLabel() {
 }
 
 func (t *weatherTab) historyDays() int {
-	d := int(t.st.SettingFloat(wjKeyDays, 3))
+	d := int(t.st.SettingFloat(wjKeyDays, 30))
 	if d < 1 {
 		d = 1
 	}
-	if d > 7 {
-		d = 7
+	if d > 30 {
+		d = 30
 	}
 	return d
 }
@@ -165,55 +166,75 @@ func (t *weatherTab) syncAsync() {
 	}()
 }
 
-// fetch — собирает данные с внешних источников. Каждый сетевой вызов — со
-// своим таймаутом (общий таймаут на цепочку вызовов даёт ложные обрывы,
-// см. V2_NOTES.md).
+// fetch собирает данные с внешних источников.
+//
+// Все независимые сетевые вызовы идут ПАРАЛЛЕЛЬНО. Раньше они шли строгой
+// цепочкой (станция → прогноз → архив → море → METAR), поэтому раздел
+// открывался очень долго: время складывалось из всех запросов подряд.
+// Теперь это время самого медленного запроса плюс один короткий второй круг
+// для METAR (он зависит от кода станции).
 func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 	lat := t.st.SettingFloat(wjKeyLat, wjDefaultLat)
 	lon := t.st.SettingFloat(wjKeyLon, wjDefaultLon)
 	c := t.client
 
-	var st forecast.Station
-	{
-		c1, cancel := ctx(45 * time.Second)
-		s, _ := c.NearestStation(c1, lat, lon)
-		cancel()
-		st = s
+	var (
+		wg       sync.WaitGroup
+		st       forecast.Station
+		live     map[time.Time]*forecast.Hour
+		arch     map[time.Time]*forecast.Hour
+		sea      map[time.Time]*forecast.Hour
+		seaPrev  map[time.Time]*forecast.Hour
+		observed map[time.Time]*forecast.Hour
+		off      int
+		liveErr  error
+	)
+
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		c1, cancel := ctx(40 * time.Second)
+		defer cancel()
+		st, _ = c.NearestStation(c1, lat, lon)
+	}()
+	go func() {
+		defer wg.Done()
+		c2, cancel := ctx(40 * time.Second)
+		defer cancel()
+		live, off, liveErr = c.Live(c2, lat, lon)
+	}()
+	go func() {
+		defer wg.Done()
+		c3, cancel := ctx(40 * time.Second)
+		defer cancel()
+		arch, _ = c.Archive(c3, lat, lon, daysBack)
+	}()
+	go func() {
+		defer wg.Done()
+		c4, cancel := ctx(40 * time.Second)
+		defer cancel()
+		sea, seaPrev, _ = c.MarineHours(c4, lat, lon, daysBack, 3)
+	}()
+	go func() {
+		defer wg.Done()
+		c5, cancel := ctx(40 * time.Second)
+		defer cancel()
+		observed, _ = c.Observed(c5, lat, lon, daysBack)
+	}()
+	wg.Wait()
+
+	if liveErr != nil {
+		return nil, fmt.Errorf("прогноз погоды: %w", liveErr)
 	}
 
-	var live, arch map[time.Time]*forecast.Hour
-	var off int
-	{
-		c2, cancel := ctx(45 * time.Second)
-		h, o, err := c.Live(c2, lat, lon)
-		cancel()
-		if err != nil {
-			return nil, fmt.Errorf("прогноз погоды: %w", err)
-		}
-		live, off = h, o
-	}
-	{
-		c3, cancel := ctx(45 * time.Second)
-		h, _ := c.Archive(c3, lat, lon, daysBack)
-		cancel()
-		arch = h
-	}
-
-	var sea, seaPrev map[time.Time]*forecast.Hour
-	{
-		c4, cancel := ctx(45 * time.Second)
-		cur, prev, _ := c.MarineHours(c4, lat, lon, daysBack, 3)
-		cancel()
-		sea, seaPrev = cur, prev
-	}
-
+	// METAR — второй круг, только если известен код станции.
 	var obs []forecast.Obs
 	if st.ICAO != "" {
-		c5, cancel := ctx(45 * time.Second)
-		o, _ := c.METAR(c5, st.ICAO, (daysBack+1)*24)
+		c6, cancel := ctx(40 * time.Second)
+		obs, _ = c.METAR(c6, st.ICAO, (daysBack+1)*24)
 		cancel()
-		obs = o
 	}
+
 
 	loc := time.FixedZone("local", off)
 	now := time.Now()
@@ -243,6 +264,19 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 	for _, h := range sea {
 		seaList = append(seaList, *h)
 	}
+	// Фактическая погода из архива (реанализ ERA5) — идёт отдельным источником,
+	// чтобы блок «Факт» заполнялся даже без METAR ближайшего аэропорта.
+	var obsList []forecast.Hour
+	for _, h := range observed {
+		hh := *h
+		if s, ok := sea[h.T]; ok {
+			hh.Wave, hh.HasWave = s.Wave, s.HasWave
+			if s.HasWater {
+				hh.Water, hh.HasWater = s.Water, true
+			}
+		}
+		obsList = append(obsList, hh)
+	}
 
 	var days []int
 	days = append(days, 2, 1, 0)
@@ -264,12 +298,22 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 		f := forecast.Summarize(src, s, e, loc)
 		p := wjPeriod{Title: forecast.PeriodTitle(s, e, loc), Label: label, Forecast: forecast.ForecastLines(f)}
 		if d <= 0 {
+			// Факт: сначала METAR (приборные наблюдения), при его отсутствии —
+			// архив реанализа ERA5, который содержит ветер, видимость, погоду,
+			// температуру воздуха и воды.
 			fa := forecast.SummarizeFact(obs, seaList, s, e, loc)
+			if fa.Obs == 0 {
+				fa = forecast.SummarizeObserved(obsList, seaList, s, e, loc)
+				fa.Source = "архив ERA5"
+			} else {
+				fa.Source = "METAR " + fa.Station
+			}
 			if fa.Obs > 0 || fa.HasSea {
 				p.HasFact = true
 				p.Fact = forecast.FactLines(fa)
 				p.Station = fa.Station
 				p.Verdict = forecast.Verify(f, fa, now)
+				p.FactText = forecast.FactSummary(fa, p.Verdict)
 			}
 		}
 		out = append(out, p)
@@ -298,9 +342,18 @@ func (t *weatherTab) card(p wjPeriod) fyne.CanvasObject {
 			factHead += " (" + p.Station + ")"
 		}
 		rows = append(rows, bold(factHead+":"))
-		for _, l := range p.Fact {
-			rows = append(rows, fieldRow(l.Label, l.Value))
+
+		// Факт одной строкой в формате судового журнала.
+		if p.FactText != "" {
+			fact := wrapLabel(p.FactText)
+			fact.TextStyle = fyne.TextStyle{Bold: true}
+			rows = append(rows, fact)
+		} else {
+			for _, l := range p.Fact {
+				rows = append(rows, fieldRow(l.Label, l.Value))
+			}
 		}
+
 		if p.Verdict.Percent >= 0 {
 			pct := widget.NewLabelWithStyle(fmt.Sprintf("Оправдываемость прогноза: %d%%", p.Verdict.Percent), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			rows = append(rows, pct)
@@ -334,8 +387,8 @@ func newWeatherSettingsForm(a *App) fyne.CanvasObject {
 	lat.SetText(fmt.Sprintf("%.4f", a.St.SettingFloat(wjKeyLat, wjDefaultLat)))
 	lon := widget.NewEntry()
 	lon.SetText(fmt.Sprintf("%.4f", a.St.SettingFloat(wjKeyLon, wjDefaultLon)))
-	days := widget.NewSelect([]string{"1", "3", "7"}, nil)
-	days.SetSelected(a.St.Setting(wjKeyDays, "3"))
+	days := widget.NewSelect([]string{"1", "3", "7", "14", "30"}, nil)
+	days.SetSelected(a.St.Setting(wjKeyDays, "30"))
 
 	names := make([]string, 0, len(wjPresets))
 	for k := range wjPresets {

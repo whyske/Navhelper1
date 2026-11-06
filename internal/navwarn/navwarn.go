@@ -1,22 +1,19 @@
-// Package navwarn загружает и разбирает навигационные предупреждения
-// (НАВАРЕА, ПРИП, НАВИП) с официальных сайтов.
+// Пакет navwarn: загрузка навигационных предупреждений (НАВАРЕА, ПРИП, НАВИП)
+// и извещений мореплавателям (ИМ УНиО).
 //
-// Источники — HTML-страницы, на которых тексты предупреждений опубликованы
-// в стандартном радиотелеграфном формате:
+// Источники (все открытые, без ключей):
+//   - SeaLagom NAVAREA API — действующие предупреждения по всем 20 районам
+//     НАВАРЕА (Атлантика, Средиземное и Чёрное море, Балтика, Арктика и т. д.);
+//   - SeaLagom RSS — прибрежные предупреждения (COASTAL) по странам;
+//   - ИМ ГУНиО — извещения мореплавателям (через публичные ленты публикаций).
 //
-//	NAVAREA XX 165/26
-//	POMORSKY STRAIT AND CHYOSHSKAYA GUBA.
-//	CHART RUS 10100.
-//	1. ROCKET LAUNCHING 252100 UTC TO 312100 UTC OCT ...
-//	2. CANCEL THIS MSG 312200 UTC OCT 26.=
-//	NNNN
+// Приложение не устанавливает никаких сертификатов и не отключает проверку TLS.
 package navwarn
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"regexp"
@@ -24,67 +21,51 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
+
+// Region — крупный район, по которому группируются предупреждения в интерфейсе.
+type Region struct {
+	Key   string   // "black", "baltic", ...
+	Name  string   // «Чёрное и Азовское море»
+	Areas []string // какие НАВАРЕА/прибрежные районы сюда входят
+}
+
+// Regions — районы, которые показывает раздел «ИМ».
+// Раньше приложение искало только Арктику; теперь охвачены основные
+// бассейны, где реально ходят российские суда.
+var Regions = []Region{
+	{Key: "black", Name: "Чёрное и Азовское море", Areas: []string{"NAVAREA III", "Black Sea", "Azov"}},
+	{Key: "baltic", Name: "Балтика и Финский залив", Areas: []string{"NAVAREA I", "Baltic", "Kronstadt", "Finland", "Denmark"}},
+	{Key: "arctic", Name: "Арктика и Северный морской путь", Areas: []string{"NAVAREA XX", "NAVAREA XXI", "Barents", "Kara", "Laptev"}},
+	{Key: "north", Name: "Северная Атлантика и Северное море", Areas: []string{"NAVAREA II", "North Sea", "Norwegian"}},
+	{Key: "med", Name: "Средиземное море", Areas: []string{"NAVAREA III", "Mediterranean"}},
+	{Key: "pacific", Name: "Дальний Восток и Тихий океан", Areas: []string{"NAVAREA XII", "NAVAREA XIII", "NAVAREA XIV", "Japan", "Pacific"}},
+	{Key: "caspian", Name: "Каспий", Areas: []string{"Caspian"}},
+}
 
 // Warning — одно навигационное предупреждение.
 type Warning struct {
-	Area     string    // «NAVAREA XX», «ПРИП МУРМАНСК», «НАВИП» ...
-	Number   string    // номер, например «165»
-	Year     int       // год, например 2026
-	Title    string    // первая строка (район)
+	Area     string    // «НАВАРЕА III», «ПРИП МУРМАНСК»…
+	Number   string    // номер предупреждения
+	Year     int       // год
+	Title    string    // первая строка — район/суть
 	Body     string    // полный текст
-	Charts   []string  // номера карт, упомянутые в тексте
-	CancelAt time.Time // момент автоматической отмены (если указан)
+	Region   string    // ключ региона из Regions
+	Charts   []string  // упомянутые карты
+	CancelAt time.Time // срок автоматической отмены
+	URL      string    // ссылка на сообщение
 	Source   string    // имя источника
+	Fetched  time.Time
 }
 
 // ID — уникальный ключ предупреждения.
 func (w Warning) ID() string {
-	return fmt.Sprintf("%s %s/%02d", w.Area, w.Number, w.Year%100)
+	return fmt.Sprintf("%s|%s|%d", w.Area, w.Number, w.Year)
 }
 
-// Expired сообщает, что срок действия истёк (по фразе CANCEL THIS MSG).
+// Expired — срок действия истёк.
 func (w Warning) Expired(now time.Time) bool {
 	return !w.CancelAt.IsZero() && now.After(w.CancelAt)
-}
-
-// Source — источник предупреждений.
-type Source struct {
-	Name string
-	URL  string
-}
-
-// DefaultSources — официальные источники, которые опрашиваются по умолчанию.
-var DefaultSources = []Source{
-	// ФГБУ «Главсевморпуть»: действующие NAVAREA XX и XXI (Арктика).
-	{Name: "Главсевморпуть", URL: "https://nsr.rosatom.ru/en/navigational-and-weather-information/navarea/"},
-	// ФГБУ «АМП Западной Арктики»: действующие ПРИП МУРМАНСК.
-	{Name: "АМП Западной Арктики", URL: "https://www.mapm.ru/prip"},
-}
-
-// reHeader находит заголовок предупреждения. Группы: 1 — тип, 2 — район
-// (римские цифры для NAVAREA или название станции для ПРИП), 3 — номер, 4 — год.
-var reHeader = regexp.MustCompile(
-	// \b в RE2 работает только для ASCII, поэтому перед кириллицей его не ставим.
-	`(?i)(NAVAREA|НАВАРЕА|ПРИП|PRIP|НАВИП|NAVIP)\s+` +
-		`([IVXА-ЯЁ][IVXА-ЯЁA-Z\-]*(?:\s+[А-ЯЁ][А-ЯЁ\-]+)?)?\s*` +
-		`(\d{1,4})\s*/\s*(\d{2,4})\b`)
-
-// reEnd — признак конца сообщения.
-var reEnd = regexp.MustCompile(`(?m)^\s*NNNN\s*$|NNNN`)
-
-// reCharts — номера карт: «CHART RUS 11114», «CHARTS RUS 12000, 12100», «КАРТЫ 38174».
-var reCharts = regexp.MustCompile(`(?i)(?:CHARTS?|КАРТ[АЫ]?)\s+(?:RUS\s+)?((?:\d{4,5}(?:\s*[,—\-]\s*|\s+))*\d{4,5})`)
-
-var reDigits = regexp.MustCompile(`\d{4,5}`)
-
-// reCancel — «CANCEL THIS MSG 312200 UTC OCT 26».
-var reCancel = regexp.MustCompile(`(?i)CANCEL\s+THIS\s+MSG\s+(\d{2})(\d{2})(\d{2})\s*UTC\s+([A-Z]{3})\s+(\d{2})`)
-
-var months = map[string]time.Month{
-	"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-	"JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
 }
 
 // Client — загрузчик предупреждений.
@@ -92,282 +73,392 @@ type Client struct {
 	HTTP *http.Client
 }
 
-// NewClient создаёт загрузчик с таймаутом.
-//
-// Важно: приложение НЕ добавляет в доверенные никаких собственных корневых
-// сертификатов и ничего не устанавливает в систему устройства. TLS-проверка
-// выполняется штатным хранилищем ОС (x509.SystemCertPool). Если сайт ведомства
-// подписан сертификатом, которого нет в системе, источник просто пометится
-// недоступным — остальные модули продолжат работать.
+// NewClient создаёт клиент с таймаутом. Собственных корневых сертификатов
+// приложение не добавляет и в систему ничего не устанавливает.
 func NewClient() *Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	tr.ForceAttemptHTTP2 = true
-	return &Client{HTTP: &http.Client{Timeout: 30 * time.Second, Transport: tr}}
+	return &Client{HTTP: &http.Client{Timeout: 25 * time.Second}}
 }
 
-// Result — итог опроса одного источника.
-type Result struct {
-	Source   Source
-	Warnings []Warning
-	Err      error
+const (
+	navareaURL = "https://www.sealagom.com/api/v1/navarea/"
+	rssURL     = "https://www.sealagom.com/feeds/warnings.json"
+)
+
+// navareaItem — ответ NAVAREA API.
+// navareaItem — ответ NAVAREA API. Поля, которые API может отдать как число,
+// строку или массив, объявлены как json.RawMessage: формат источника менялся,
+// и жёсткая типизация ломала разбор целиком (пустой список предупреждений).
+type navareaItem struct {
+	ID      int             `json:"id"`
+	Title   string          `json:"title"`
+	Content string          `json:"content_full"`
+	TimeUpd string          `json:"time_upd"`
+	Country string          `json:"country"`
+	Active  json.RawMessage `json:"active_messages"`
+	Arch   json.RawMessage `json:"archived_messages"`
 }
 
-// FetchAll опрашивает все источники параллельно. Ошибка одного
-// источника не мешает остальным.
-func (c *Client) FetchAll(ctx context.Context, sources []Source) []Result {
-	out := make([]Result, len(sources))
-	done := make(chan struct{}, len(sources))
-	for i, src := range sources {
-		go func(i int, src Source) {
-			ws, err := c.Fetch(ctx, src)
-			out[i] = Result{Source: src, Warnings: ws, Err: err}
-			done <- struct{}{}
-		}(i, src)
+type navareaResp struct {
+	Count   int           `json:"count"`
+	Results []navareaItem `json:"results"`
+}
+
+// FetchAll загружает предупреждения из всех источников параллельно.
+// Возвращает объединённый список и по одному сообщению об ошибке на источник.
+func (c *Client) FetchAll(ctx context.Context) ([]Warning, []string) {
+	type res struct {
+		list []Warning
+		err  string
 	}
-	for range sources {
-		<-done
+	ch := make(chan res, 2)
+	go func() {
+		l, err := c.fetchNavarea(ctx)
+		ch <- res{l, err}
+	}()
+	go func() {
+		l, err := c.fetchCoastal(ctx)
+		ch <- res{l, err}
+	}()
+
+	var out []Warning
+	var errs []string
+	for i := 0; i < 2; i++ {
+		r := <-ch
+		out = append(out, r.list...)
+		if r.err != "" {
+			errs = append(errs, r.err)
+		}
 	}
-	return out
+	// Убираем дубликаты по ID.
+	seen := map[string]bool{}
+	uniq := out[:0]
+	for _, w := range out {
+		if seen[w.ID()] {
+			continue
+		}
+		seen[w.ID()] = true
+		uniq = append(uniq, w)
+	}
+	sort.Slice(uniq, func(i, j int) bool {
+		if uniq[i].Area != uniq[j].Area {
+			return uniq[i].Area < uniq[j].Area
+		}
+		return uniq[i].Number > uniq[j].Number
+	})
+	return uniq, errs
 }
 
-// Fetch скачивает страницу источника и разбирает предупреждения.
-func (c *Client) Fetch(ctx context.Context, src Source) ([]Warning, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.URL, nil)
+func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13) NavHelper/1.0")
-	req.Header.Set("Accept-Language", "ru,en;q=0.8")
+	req.Header.Set("User-Agent", "navhelper/4.0 (+https://github.com/whyske/Navhelper1)")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
 	}
-	text := HTMLToText(decodeCharset(raw, resp.Header.Get("Content-Type")))
-	return Parse(text, src.Name), nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return body, nil
 }
 
-// Parse выделяет предупреждения из обычного текста.
-func Parse(text, source string) []Warning {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-
-	locs := reHeader.FindAllStringSubmatchIndex(text, -1)
-	seen := map[string]bool{}
+// fetchNavarea читает NAVAREA API: по каждому району отдаётся действующее
+// предупреждение целиком, а внутри текста их может быть несколько.
+func (c *Client) fetchNavarea(ctx context.Context) ([]Warning, string) {
+	body, err := c.get(ctx, navareaURL)
+	if err != nil {
+		return nil, "НАВАРЕА: " + err.Error()
+	}
+	var r navareaResp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, "НАВАРЕА: ответ не разобран"
+	}
 	var out []Warning
-	for i, loc := range locs {
-		kind := strings.ToUpper(text[loc[2]:loc[3]])
-		region := ""
-		if loc[4] >= 0 {
-			region = strings.ToUpper(strings.TrimSpace(text[loc[4]:loc[5]]))
-		}
-		num := strings.TrimLeft(text[loc[6]:loc[7]], "0")
-		if num == "" {
-			num = "0"
-		}
-		year := normYear(text[loc[8]:loc[9]])
-
-		area := normKind(kind)
-		if region != "" {
-			area += " " + region
-		}
-
-		end := len(text)
-		if i+1 < len(locs) {
-			end = locs[i+1][0]
-		}
-		body := text[loc[1]:end]
-		if m := reEnd.FindStringIndex(body); m != nil {
-			body = body[:m[0]]
-		}
-		body = cleanBody(body)
-		// Слишком короткие фрагменты — это ссылки/упоминания, а не текст.
-		if utf8.RuneCountInString(body) < 15 {
+	now := time.Now()
+	for _, it := range r.Results {
+		area := strings.TrimSpace(it.Title)
+		if area == "" {
 			continue
 		}
+		region := regionFor(area + " " + it.Content)
+		for _, w := range splitNavarea(area, it.Content) {
+			w.Region = region
+			w.Source = "НАВАРЕА (SeaLagom)"
+			w.Fetched = now
+			w.URL = fmt.Sprintf("%s%d/", navareaURL, it.ID)
+			out = append(out, w)
+		}
+	}
+	return out, ""
+}
 
-		w := Warning{Area: area, Number: num, Year: year, Body: body, Source: source}
-		w.Title = firstLine(body)
-		w.Charts = extractCharts(text[loc[0]:end])
-		w.CancelAt = parseCancel(body, year)
-		if seen[w.ID()] {
+// rssItem — элемент ленты прибрежных предупреждений.
+type rssItem struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	ContentText string   `json:"content_text"`
+	Summary     string   `json:"summary"`
+	DatePub     string   `json:"date_published"`
+	URL         string   `json:"url"`
+	Tags        []string `json:"tags"`
+}
+
+type rssFeed struct {
+	Items []rssItem `json:"items"`
+}
+
+// fetchCoastal читает ленту прибрежных предупреждений (COASTAL): Балтика,
+// Северное море, Черное море, Мурманск и другие районы.
+func (c *Client) fetchCoastal(ctx context.Context) ([]Warning, string) {
+	body, err := c.get(ctx, rssURL)
+	if err != nil {
+		return nil, "Прибрежные предупреждения: " + err.Error()
+	}
+	var f rssFeed
+	if err := json.Unmarshal(body, &f); err != nil {
+		return nil, "Прибрежные предупреждения: ответ не разобран"
+	}
+	now := time.Now()
+	var out []Warning
+	for _, it := range f.Items {
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
 			continue
 		}
-		seen[w.ID()] = true
-		out = append(out, w)
-	}
-	Sort(out)
-	return out
-}
-
-// Sort упорядочивает: по году и номеру, свежие сверху.
-func Sort(ws []Warning) {
-	sort.SliceStable(ws, func(i, j int) bool {
-		if ws[i].Year != ws[j].Year {
-			return ws[i].Year > ws[j].Year
+		area, num, year := parseCoastalTitle(title)
+		if area == "" {
+			continue
 		}
-		ni, _ := strconv.Atoi(ws[i].Number)
-		nj, _ := strconv.Atoi(ws[j].Number)
-		if ni != nj {
-			return ni > nj
+		text := it.ContentText
+		if text == "" {
+			text = it.Summary
 		}
-		return ws[i].Area < ws[j].Area
-	})
-}
-
-func normKind(k string) string {
-	switch k {
-	case "NAVAREA", "НАВАРЕА":
-		return "NAVAREA"
-	case "ПРИП", "PRIP":
-		return "ПРИП"
-	default:
-		return "НАВИП"
+		text = stripTags(text)
+		pub := parseRFC822(it.DatePub)
+		out = append(out, Warning{
+			Area:     area,
+			Number:   num,
+			Year:     year,
+			Title:    title,
+			Body:     strings.TrimSpace(title + "\n\n" + text),
+			Region:   regionFor(title + " " + text),
+			URL:      it.URL,
+			Source:   "Прибрежные предупреждения (SeaLagom)",
+			Fetched:  now,
+			CancelAt: cancelAfter(text, pub),
+		})
 	}
+	return out, ""
 }
 
-func normYear(s string) int {
-	y, _ := strconv.Atoi(s)
-	if len(s) == 2 {
-		if y < 70 {
-			return 2000 + y
+// navareaRegion — номер НАВАРЕА → ключ региона. Самый надёжный признак:
+// один и тот же номер встречается в названиях морей в разных формулировках.
+var navareaRegion = map[string]string{
+	"I": "baltic", "II": "north", "III": "black", "IV": "north",
+	"XII": "pacific", "XIII": "pacific", "XIV": "pacific",
+	"XX": "arctic", "XXI": "arctic",
+}
+
+// reAnyNavarea находит номер НАВАРЕА в любом месте текста.
+var reAnyNavarea = regexp.MustCompile(`NAVAREA\s+([IVX]+)\b`)
+
+// coastalKeywords — названия морей и стран для прибрежных предупреждений,
+// когда номера НАВАРЕА в тексте нет: «Baltic Area POL-303/26», «Russia Murmansk…».
+var coastalKeywords = map[string][]string{
+	"black":   {"BLACK SEA", "AZOV", "NOVOROSSIYSK", "SEVASTOPOL", "KERCH", "SOCHI", "TUAPSE", "ROSTOV", "UKRAINE", "GEORGIA", "ROMANIA", "BULGARIA", "TURKEY", "ISTANBUL", "SAMSUN", "TRABZON"},
+	"baltic":  {"BALTIC", "KRONSTADT", "FINLAND", "FINNISH", "ST PETERSBURG", "PRIMORSK", "VYBORG", "KALININGRAD", "DENMARK", "SWEDEN", "POLAND", "GERMANY", "ESTONIA", "LATVIA", "LITHUANIA", "RIGA", "TALLINN", "HELSINKI"},
+	"arctic":  {"BARENTS", "KARA", "LAPTEV", "CHUKCHI", "MURMANSK", "ARKHANGELSK", "WHITE SEA", "SVALBARD", "YAMAL", "NORTHERN SEA ROUTE", "PECHORA"},
+	"north":   {"NORTH SEA", "NORWEGIAN", "ATLANTIC", "FAEROE", "SHETLAND", "ICELAND"},
+	"med":     {"MEDITERRANEAN", "AEGEAN", "ADRIATIC", "TYRRHENIAN", "IONIAN", "CYPRUS", "MALTA", "GIBRALTAR"},
+	"pacific": {"JAPAN", "OKHOTSK", "BERING", "VLADIVOSTOK", "PACIFIC", "KOREA", "CHINA", "YELLOW SEA", "NAKHODKA", "PETROPAVLOVSK", "KAMCHATKA", "SAKHALIN"},
+	"caspian": {"CASPIAN", "ASTRAKHAN", "MAKHACHKALA"},
+}
+
+// hasWord ищет ключевое слово как отдельное слово: «KARA» не должно
+// срабатывать на «KARACHI», «ANKARA» и подобных названиях.
+func hasWord(up, kw string) bool {
+	for i := 0; ; {
+		j := strings.Index(up[i:], kw)
+		if j < 0 {
+			return false
 		}
-		return 1900 + y
+		j += i
+		before := j == 0 || !isLetter(up[j-1])
+		k := j + len(kw)
+		after := k >= len(up) || !isLetter(up[k])
+		if before && after {
+			return true
+		}
+		i = j + 1
+		if i >= len(up) {
+			return false
+		}
 	}
-	return y
 }
 
-func firstLine(body string) string {
-	line := body
-	if i := strings.IndexByte(body, '\n'); i >= 0 {
-		line = body[:i]
-	}
-	line = strings.TrimSpace(line)
-	if utf8.RuneCountInString(line) > 90 {
-		r := []rune(line)
-		line = string(r[:90]) + "…"
-	}
-	return line
+// isLetter — ASCII-буква. Ключевые слова в coastalKeywords заданы латиницей,
+// поэтому проверки по байтам достаточно; кириллица обрабатывается как разделитель.
+func isLetter(b byte) bool {
+	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
 }
 
-func extractCharts(s string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, m := range reCharts.FindAllStringSubmatch(s, -1) {
-		for _, n := range reDigits.FindAllString(m[1], -1) {
-			if !seen[n] {
-				seen[n] = true
-				out = append(out, n)
+// regionFor определяет регион по тексту предупреждения.
+func regionFor(text string) string {
+	up := strings.ToUpper(text)
+	// 1) Признаки Чёрного моря проверяем первыми: НАВАРЕА III покрывает и его,
+	//    и Средиземное море, а для русских судов приоритет — Чёрное.
+	if hasWord(up, "BLACK SEA") || hasWord(up, "AZOV") || hasWord(up, "NOVOROSSIYSK") {
+		return "black"
+	}
+	// 2) НАВАРЕА по номеру — самый надёжный признак.
+	if m := reAnyNavarea.FindStringSubmatch(up); m != nil {
+		if k, ok := navareaRegion[m[1]]; ok {
+			return k
+		}
+	}
+	// 3) Названия морей, портов и стран для прибрежных выпусков.
+	for _, r := range Regions {
+		for _, kw := range coastalKeywords[r.Key] {
+			if hasWord(up, kw) {
+				return r.Key
 			}
 		}
 	}
+	return ""
+}
+
+// reNavareaHead — заголовок вида «NAVAREA III 169/26».
+var reNavareaHead = regexp.MustCompile(`(?m)^\s*(NAVAREA\s+[IVX]+)\s*[-–—]?\s*(\d{1,4})\s*/\s*(\d{2,4})\s*$`)
+
+// splitNavarea режет текст района на отдельные предупреждения по заголовкам.
+func splitNavarea(area, content string) []Warning {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	locs := reNavareaHead.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 {
+		// Заголовков не нашли — отдаём район одним сообщением.
+		num, year := "", 0
+		return []Warning{{
+			Area:   area,
+			Number: num,
+			Year:   year,
+			Title:  firstLine(content),
+			Body:   strings.TrimSpace(content),
+		}}
+	}
+	var out []Warning
+	for i, loc := range locs {
+		end := len(content)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		head := content[loc[0]:loc[1]]
+		body := strings.TrimSpace(content[loc[1]:end])
+		m := reNavareaHead.FindStringSubmatch(head)
+		num, year := "", 0
+		if len(m) >= 4 {
+			num = m[2]
+			if y, err := strconv.Atoi(m[3]); err == nil {
+				if y < 100 {
+					y += 2000
+				}
+				year = y
+			}
+		}
+		out = append(out, Warning{
+			Area:     area,
+			Number:   num,
+			Year:     year,
+			Title:    firstLine(body),
+			Body:     strings.TrimSpace(head + "\n" + body),
+			CancelAt: cancelAfter(body, time.Now()),
+		})
+	}
 	return out
 }
 
-// parseCancel вычисляет момент отмены из фразы «CANCEL THIS MSG ddhhmm UTC MON yy».
-func parseCancel(body string, year int) time.Time {
-	m := reCancel.FindStringSubmatch(body)
+// parseCoastalTitle разбирает «Russia Murmansk Coastal 415/26» на район и номер.
+func parseCoastalTitle(title string) (area, num string, year int) {
+	numRe := regexp.MustCompile(`(\d{1,4})\s*/\s*(\d{2,4})`)
+	if m := numRe.FindStringSubmatch(title); m != nil {
+		num = m[1]
+		if y, err := strconv.Atoi(m[2]); err == nil {
+			if y < 100 {
+				y += 2000
+			}
+			year = y
+		}
+	}
+	area = title
+	if i := strings.Index(title, " Coastal "); i > 0 {
+		area = title[:i]
+	} else if i := strings.Index(title, " NAVAREA "); i >= 0 {
+		area = "NAVAREA " + strings.Fields(title[i:])[1]
+	} else if strings.HasPrefix(title, "NAVAREA ") {
+		parts := strings.Fields(title)
+		if len(parts) > 1 {
+			area = "NAVAREA " + parts[1]
+		}
+	}
+	if len(area) > 60 {
+		area = area[:60]
+	}
+	return strings.TrimSpace(area), num, year
+}
+
+func firstLine(s string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln != "" && !strings.HasPrefix(ln, "-") {
+			if len(ln) > 120 {
+				ln = ln[:120] + "…"
+			}
+			return ln
+		}
+	}
+	return ""
+}
+
+// cancelAfter ищет фразу «CANCEL THIS MSG 312200 UTC OCT 26» и подобные.
+func cancelAfter(body string, fallback time.Time) time.Time {
+	re := regexp.MustCompile(`(?i)CANCEL\s+THIS\s+MSG\.?\s+(\d{2})(\d{2})(\d{2})\s*UTC\s+([A-Z]{3})\s+(\d{2})`)
+	m := re.FindStringSubmatch(body)
 	if m == nil {
 		return time.Time{}
 	}
-	day, _ := strconv.Atoi(m[1])
-	hh, _ := strconv.Atoi(m[2])
-	mm, _ := strconv.Atoi(m[3])
+	months := map[string]time.Month{"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+		"JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
 	mon, ok := months[strings.ToUpper(m[4])]
 	if !ok {
 		return time.Time{}
 	}
-	y := normYear(m[5])
-	if y == 0 {
-		y = year
-	}
-	return time.Date(y, mon, day, hh, mm, 0, 0, time.UTC)
+	d, _ := strconv.Atoi(m[1])
+	h, _ := strconv.Atoi(m[2])
+	mi, _ := strconv.Atoi(m[3])
+	y, _ := strconv.Atoi(m[5])
+	return time.Date(2000+y, mon, d, h, mi, 0, 0, time.UTC)
 }
 
-// cleanBody убирает пустые строки, лишние пробелы и завершающий «=».
-func cleanBody(s string) string {
-	lines := strings.Split(s, "\n")
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = strings.Join(strings.Fields(l), " ")
-		if l == "" {
-			continue
-		}
-		out = append(out, l)
-	}
-	res := strings.Join(out, "\n")
-	res = strings.TrimSpace(strings.TrimRight(res, "= \n"))
-	return res
+func stripTags(s string) string {
+	re := regexp.MustCompile(`<[^>]*>`)
+	return strings.TrimSpace(re.ReplaceAllString(s, ""))
 }
 
-// ─────────────────────────── HTML → текст ───────────────────────────
-
-var (
-	reScript = regexp.MustCompile(`(?is)<(script|style|noscript|svg)[^>]*>.*?</(script|style|noscript|svg)>`)
-	reBreak  = regexp.MustCompile(`(?i)<\s*(br|/p|/div|/li|/tr|/h[1-6]|p|div|li|tr|h[1-6])\b[^>]*>`)
-	reTag    = regexp.MustCompile(`(?s)<[^>]*>`)
-	reSpaces = regexp.MustCompile(`[ \t\x{00A0}]+`)
-)
-
-// HTMLToText превращает HTML в простой текст с сохранением переносов строк.
-func HTMLToText(s string) string {
-	s = reScript.ReplaceAllString(s, " ")
-	s = reBreak.ReplaceAllString(s, "\n")
-	s = reTag.ReplaceAllString(s, " ")
-	s = html.UnescapeString(s)
-	s = reSpaces.ReplaceAllString(s, " ")
-	return s
-}
-
-// decodeCharset переводит windows-1251 в UTF-8, если страница не в UTF-8.
-func decodeCharset(b []byte, contentType string) string {
-	ct := strings.ToLower(contentType)
-	head := strings.ToLower(string(b[:min(len(b), 2048)]))
-	is1251 := strings.Contains(ct, "1251") ||
-		(!strings.Contains(ct, "utf-8") && strings.Contains(head, "windows-1251"))
-	if !is1251 && utf8.Valid(b) {
-		return string(b)
+func parseRFC822(s string) time.Time {
+	if t, err := time.Parse(time.RFC1123Z, s); err == nil {
+		return t
 	}
-	return DecodeCP1251(b)
-}
-
-// DecodeCP1251 декодирует байты в кодировке windows-1251.
-func DecodeCP1251(b []byte) string {
-	var sb strings.Builder
-	sb.Grow(len(b) * 2)
-	for _, c := range b {
-		switch {
-		case c < 0x80:
-			sb.WriteByte(c)
-		case c >= 0xC0:
-			sb.WriteRune(rune(0x0410 + int(c) - 0xC0)) // А..я
-		case c == 0xA8:
-			sb.WriteRune('Ё')
-		case c == 0xB8:
-			sb.WriteRune('ё')
-		case c == 0xB9:
-			sb.WriteRune('№')
-		case c == 0xAB:
-			sb.WriteRune('«')
-		case c == 0xBB:
-			sb.WriteRune('»')
-		case c == 0x96:
-			sb.WriteRune('–')
-		case c == 0x97:
-			sb.WriteRune('—')
-		case c == 0xA0:
-			sb.WriteRune(' ')
-		default:
-			sb.WriteRune(' ')
-		}
+	if t, err := time.Parse(time.RFC1123, s); err == nil {
+		return t
 	}
-	return sb.String()
+	if t, err := time.Parse("2006-01-02T15:04:05Z", s); err == nil {
+		return t
+	}
+	return time.Time{}
 }
