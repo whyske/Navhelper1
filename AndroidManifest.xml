@@ -14,14 +14,15 @@
 	android:versionName="4.2.0">
 
 	<application android:label="NavHelper"
-		android:icon="@mipmap/icon"
-		android:roundIcon="@mipmap/icon"
 		android:debuggable="false"
 		android:allowBackup="true">
+		<!-- Иконку на уровне activity задавать МОЖНО (Fyne запрещает её только
+		     в теге application, где подставляет сам). Без неё некоторые
+		     лаунчеры не находят значок и рисуют заглушку с именем класса
+		     org.golang.app.GoNativeActivity. -->
 		<activity android:name="org.golang.app.GoNativeActivity"
 			android:label="NavHelper"
 			android:icon="@mipmap/icon"
-			android:roundIcon="@mipmap/icon"
 			android:configChanges="orientation|keyboardHidden|uiMode|screenSize"
 			android:exported="true"
 			android:windowSoftInputMode="adjustResize"
