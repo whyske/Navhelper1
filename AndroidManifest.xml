@@ -10,14 +10,18 @@
 <manifest
 	xmlns:android="http://schemas.android.com/apk/res/android"
 	package="ru.navhelper.app"
-	android:versionCode="41"
-	android:versionName="4.1.0">
+	android:versionCode="42"
+	android:versionName="4.2.0">
 
 	<application android:label="NavHelper"
+		android:icon="@mipmap/icon"
+		android:roundIcon="@mipmap/icon"
 		android:debuggable="false"
 		android:allowBackup="true">
 		<activity android:name="org.golang.app.GoNativeActivity"
 			android:label="NavHelper"
+			android:icon="@mipmap/icon"
+			android:roundIcon="@mipmap/icon"
 			android:configChanges="orientation|keyboardHidden|uiMode|screenSize"
 			android:exported="true"
 			android:windowSoftInputMode="adjustResize"
@@ -28,8 +32,19 @@
 				<category android:name="android.intent.category.LAUNCHER" />
 			</intent-filter>
 		</activity>
+
+		<!--
+		  Приёмник запланированных уведомлений Fyne. Без него AlarmManager не
+		  разбудит приложение и уведомление не придёт, если процесс был убит.
+		  Обязательно android:exported="false" — будильник внутренний.
+		-->
+		<receiver android:name="org.golang.app.FyneNotificationReceiver"
+			android:exported="false" />
 	</application>
 
 	<uses-permission android:name="android.permission.INTERNET" />
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+	<!-- Точные будильники: уведомления о восходе/заходе должны приходить
+	     ровно в назначенную минуту, а не «когда-нибудь». -->
+	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 </manifest>

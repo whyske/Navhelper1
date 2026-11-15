@@ -30,6 +30,9 @@ type App struct {
 	// warnings — раздел «ИМ УНиО». Поле обязано существовать: на него
 	// ссылаются build(), обработчик возврата в приложение и таймер.
 	warnings *warningsTab
+	// notifier — менеджер уведомлений (см. notify.go). Не удалять: на него
+	// завязаны «Настройки», «Погода», «ИМ УНиО» и «Календарь».
+	notifier *notifier
 }
 
 // Run открывает базу, строит drawer-меню и запускает главный цикл.
@@ -47,6 +50,8 @@ func Run(a fyne.App) {
 	}
 
 	app := &App{FA: a, Win: w, St: st}
+	// Менеджер уведомлений создаём сразу: он нужен и до построения интерфейса.
+	app.notifier = newNotifier(app)
 
 	// Пока каталог карт импортируется (первый запуск), показываем заставку.
 	w.SetContent(container.NewCenter(container.NewVBox(
@@ -73,6 +78,11 @@ func Run(a fyne.App) {
 		if app.warnings != nil {
 			app.warnings.refreshAsync(false)
 		}
+		// Вернулись из фона — пересобираем расписание уведомлений:
+		// за это время могли смениться сутки, город или заметки.
+		if app.notifier != nil {
+			app.notifier.refresh()
+		}
 	})
 	a.Lifecycle().SetOnStopped(func() { _ = st.Close() })
 
@@ -91,7 +101,7 @@ func (a *App) build(chartCount int, importErr error) {
 	// Чтобы спрятать раздел, закомментируйте его строку, но не удаляйте файлы
 	// internal/ui/warnings.go и internal/ui/settings.go.
 	items := []navItem{
-		{"Часы", theme.InfoIcon(), newClockSection(a)},
+		{"Часы", clockIcon(), newClockSection(a)},
 		{"Калькулятор", calculatorIcon, newCalcSection(a)},
 		{"Календарь", theme.ListIcon(), newCalendarTab(a)},
 		{"Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)},
@@ -106,6 +116,8 @@ func (a *App) build(chartCount int, importErr error) {
 	a.weather.syncAsync()
 	// Предупреждения грузим не блокируя интерфейс (внутри свой кэш на 30 мин).
 	a.warnings.refreshAsync(false)
+	// Первичная постановка уведомлений в очередь.
+	a.notifier.refresh()
 
 	// Уведомления: восход/заход солнца, новый каталог карт, новые извещения,
 	// напоминания из календаря. Проверка идёт, пока приложение открыто.
@@ -119,6 +131,9 @@ func (a *App) build(chartCount int, importErr error) {
 			fyne.Do(func() {
 				a.weather.syncAsync()
 				a.warnings.refreshAsync(false)
+				// Раз в час пересобираем расписание: ставятся уведомления
+				// на следующие сутки (см. комментарий в notify.go).
+				a.notifier.refresh()
 			})
 		}
 	}()

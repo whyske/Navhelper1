@@ -615,6 +615,8 @@ func weekdaysView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 		if _, err := a.St.AddWeeklyNote(cur, startFrom, text, col, notify); err != nil {
 				dialog.ShowError(err, a.Win)
 			}
+			// Пересобираем напоминания для новой повторяющейся заметки.
+			a.notifier.refresh()
 			refresh()
 			onChanged()
 		})

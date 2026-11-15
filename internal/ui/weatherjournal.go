@@ -194,6 +194,9 @@ func (t *weatherTab) syncAsync() {
 			}
 			t.status.SetText("Обновлено: " + time.Now().Format("02.01 15:04"))
 			t.render(periods)
+			// Уведомление «прогноз на сегодня» (если включено в настройках).
+			// Данные уже загружены, дополнительных запросов не делаем.
+			t.a.notifier.pushWeather(periods)
 		})
 	}()
 }

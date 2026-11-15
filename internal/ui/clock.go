@@ -133,11 +133,52 @@ func (r *analogClockRenderer) Objects() []fyne.CanvasObject {
 
 // ─────────────────────────────────────────────────────────── раздел «Часы» ──
 
-// approxZone — приблизительный часовой пояс точки по её долготе
-// (округление до получаса). Нужен для показа местного времени города.
+// cityZone — часовой пояс города по IANA-имени.
+//
+// ВАЖНО, НЕ ЗАМЕНЯТЬ на расчёт «по долготе»!
+// Раньше здесь считалось смещение как round(долгота/15), и для Севастополя
+// (33,5° в.д.) получалось UTC+2, хотя в Севастополе действует МОСКОВСКОЕ
+// время — UTC+3. Из-за этого местное время отставало на час и время захода
+// солнца показывалось на час раньше реального (16:19 вместо 17:20).
+// Долгота задаёт лишь «природный» пояс, а страна может жить по другому
+// (декretное время, единая зона на всю страну). Поэтому пояса задаются явно.
+var cityZones = map[string]string{
+	"Севастополь (Севастопольская бухта)": "Europe/Moscow",
+	"Финский залив (Кронштадт)":           "Europe/Moscow",
+	"Кольский залив (Мурманск)":           "Europe/Moscow",
+	"Цемесская бухта (Новороссийск)":      "Europe/Moscow",
+	"Владивосток (Амурский залив)":        "Asia/Vladivostok",
+	"Калининград (Балтийск)":              "Europe/Kaliningrad",
+	"Баренцево море":                      "Europe/Moscow",
+}
+
+// approxZone — резервный расчёт пояса по долготе. Используется только если
+// для города нет записи в cityZones выше. Может ошибаться на час.
 func approxZone(lon float64) *time.Location {
 	off := math.Round(lon/15*2) / 2
 	return time.FixedZone(fmt.Sprintf("UTC%+g", off), int(off*3600))
+}
+
+// zoneForCity возвращает часовой пояс города: сначала по таблице cityZones,
+// и только если города там нет — приблизительно по долготе.
+func zoneForCity(city string, lon float64) *time.Location {
+	if name, ok := cityZones[city]; ok {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+		// На Android база часовых поясов может быть недоступна — тогда
+		// подставляем смещение вручную (Москва UTC+3, Владивосток UTC+10,
+		// Калининград UTC+2).
+		switch name {
+		case "Europe/Moscow":
+			return time.FixedZone("MSK", 3*3600)
+		case "Asia/Vladivostok":
+			return time.FixedZone("VLAT", 10*3600)
+		case "Europe/Kaliningrad":
+			return time.FixedZone("USZ1", 2*3600)
+		}
+	}
+	return approxZone(lon)
 }
 
 func newClockSection(a *App) fyne.CanvasObject {
@@ -171,7 +212,8 @@ func newClockSection(a *App) fyne.CanvasObject {
 			return
 		}
 		lat, lon := p[0], p[1]
-		cityLoc := approxZone(lon)
+		// Часовой пояс берём по названию города, а не по долготе (см. cityZones).
+		cityLoc := zoneForCity(cur, lon)
 		now := time.Now().In(cityLoc)
 		r := sun.Calculate(now, lat, lon, cityLoc)
 
@@ -186,9 +228,9 @@ func newClockSection(a *App) fyne.CanvasObject {
 			mn := int(r.DayLength.Minutes()) % 60
 			sunInfo.SetText(fmt.Sprintf(
 				"Восход: %s\nЗаход: %s\nСветовой день: %d ч %d мин\n"+
-					"Местное время города: %s (приблизительно по долготе)",
+					"Местное время города: %s (%s)",
 				r.Sunrise.Format("15:04"), r.Sunset.Format("15:04"), h, mn,
-				now.Format("15:04")))
+				now.Format("15:04"), cityLoc.String()))
 		default:
 			sunInfo.SetText("Нет данных для этой точки.")
 		}

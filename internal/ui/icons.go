@@ -14,3 +14,15 @@ var calculatorSVG []byte
 // клавишами). ThemedResource перекрашивает её под цвет темы, как стандартные.
 var calculatorIcon fyne.Resource = theme.NewThemedResource(
 	fyne.NewStaticResource("calculator.svg", calculatorSVG))
+
+//go:embed icons/clock.svg
+var clockSVG []byte
+
+// clockIcon — иконка раздела «Часы» (циферблат со стрелками).
+// Раньше здесь стояла theme.InfoIcon() — буква «i» в круге, которая к часам
+// отношения не имеет. Перекрашивается темой так же, как стандартные.
+var clockIconRes fyne.Resource = theme.NewThemedResource(
+	fyne.NewStaticResource("clock.svg", clockSVG))
+
+// clockIcon возвращает иконку раздела «Часы».
+func clockIcon() fyne.Resource { return clockIconRes }
