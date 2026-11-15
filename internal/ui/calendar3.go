@@ -585,12 +585,34 @@ func weekdaysView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 		days.Add(b)
 	}
 
+	// Поле «действует с»: дата начала действия заметки выбирается вручную,
+	// можно указать и прошлое. Пустая строка означает «с сегодняшнего дня».
+	fromEntry := widget.NewEntry()
+	fromEntry.SetPlaceHolder("ДД.ММ.ГГГГ (по умолчанию сегодня)")
+	parseFrom := func() string {
+		txt := strings.TrimSpace(fromEntry.Text)
+		if txt == "" {
+			return dateOnly(time.Now()).Format("2006-01-02")
+		}
+		if d, err := time.ParseInLocation("02.01.2006", txt, time.Local); err == nil {
+			return d.Format("2006-01-02")
+		}
+		if d, err := time.ParseInLocation("2006-01-02", txt, time.Local); err == nil {
+			return d.Format("2006-01-02")
+		}
+		return dateOnly(time.Now()).Format("2006-01-02")
+	}
+
 	add := widget.NewButtonWithIcon("Добавить заметку на день недели", theme.ContentAddIcon(), func() {
+		startFrom := parseFrom()
 		// Начинаем с ближайшего такого дня недели (сегодня, если совпадает).
 		today := dateOnly(time.Now())
 		start := today.AddDate(0, 0, (cur-store.ISOWeekday(today)+7)%7)
 		noteDialog(a, "Заметка: "+weekdaysEvery[cur-1], start, nil, false, func(text, col string, _, notify bool) {
-			if _, err := a.St.AddWeeklyNote(cur, today.Format("2006-01-02"), text, col, notify); err != nil {
+			// ВАЖНО: дата начала действия берётся из поля dateEntry, а не «сегодня».
+		// Раньше здесь жёстко стоял today, поэтому заметку нельзя было
+		// поставить в прошлое — она всегда начинала действовать с текущего дня.
+		if _, err := a.St.AddWeeklyNote(cur, startFrom, text, col, notify); err != nil {
 				dialog.ShowError(err, a.Win)
 			}
 			refresh()
@@ -599,11 +621,15 @@ func weekdaysView(a *App, onChanged func()) (fyne.CanvasObject, func()) {
 	})
 	add.Importance = widget.HighImportance
 
-	help := wrapLabel("Выберите день недели и добавьте заметку — она будет показываться в календаре на этом дне каждой недели, начиная с текущей.")
+	help := wrapLabel("Выберите день недели и добавьте заметку — она будет показываться в календаре на этом дне каждой недели. В поле «действует с» можно указать прошедшую дату, чтобы заметка появилась и в прошедших неделях.")
 	help.Importance = widget.LowImportance
 
 	refresh()
-	page := container.NewVBox(help, days, widget.NewSeparator(), head, add, listBox)
+	fromRow := container.NewVBox(
+		widget.NewLabelWithStyle("Действует с (можно указать прошлую дату):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		fromEntry,
+	)
+	page := container.NewVBox(help, days, widget.NewSeparator(), head, fromRow, add, listBox)
 	return container.NewVScroll(container.NewPadded(page)), refresh
 }
 

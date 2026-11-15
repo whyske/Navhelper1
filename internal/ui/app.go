@@ -26,7 +26,10 @@ type App struct {
 	Win fyne.Window
 	St  *store.Store
 
-	weather  *weatherTab
+	weather *weatherTab
+	// warnings — раздел «ИМ УНиО». Поле обязано существовать: на него
+	// ссылаются build(), обработчик возврата в приложение и таймер.
+	warnings *warningsTab
 }
 
 // Run открывает базу, строит drawer-меню и запускает главный цикл.
@@ -67,6 +70,9 @@ func Run(a fyne.App) {
 		if app.weather != nil {
 			app.weather.syncAsync()
 		}
+		if app.warnings != nil {
+			app.warnings.refreshAsync(false)
+		}
 	})
 	a.Lifecycle().SetOnStopped(func() { _ = st.Close() })
 
@@ -76,19 +82,30 @@ func Run(a fyne.App) {
 // build создаёт drawer-меню после импорта каталога.
 func (a *App) build(chartCount int, importErr error) {
 	a.weather = newWeatherTab(a)
+	// Раздел «ИМ УНиО» (навигационные предупреждения и извещения).
+	// Создаётся здесь обязательно: ниже он попадает в список разделов.
+	a.warnings = newWarningsTab(a)
 
+	// ВАЖНО: это полный список разделов бокового меню. Все пункты обязательны.
+	// «ИМ УНиО» и «Настройки» уже дважды пропадали из приложения при чистке кода.
+	// Чтобы спрятать раздел, закомментируйте его строку, но не удаляйте файлы
+	// internal/ui/warnings.go и internal/ui/settings.go.
 	items := []navItem{
 		{"Часы", theme.InfoIcon(), newClockSection(a)},
 		{"Калькулятор", calculatorIcon, newCalcSection(a)},
 		{"Календарь", theme.ListIcon(), newCalendarTab(a)},
 		{"Карты", theme.SearchIcon(), newChartsTab(a, chartCount, importErr)},
 		{"Погода", theme.VisibilityIcon(), a.weather.content},
+		{"ИМ УНиО", theme.WarningIcon(), a.warnings.content},   // <- не удалять
+		{"Настройки", theme.SettingsIcon(), newSettingsTab(a)}, // <- не удалять
 	}
 	root := newNavRoot(items, "NavHelper")
 	a.Win.SetContent(root)
 
 	// Сбор данных при открытии приложения.
 	a.weather.syncAsync()
+	// Предупреждения грузим не блокируя интерфейс (внутри свой кэш на 30 мин).
+	a.warnings.refreshAsync(false)
 
 	// Уведомления: восход/заход солнца, новый каталог карт, новые извещения,
 	// напоминания из календаря. Проверка идёт, пока приложение открыто.
@@ -101,6 +118,7 @@ func (a *App) build(chartCount int, importErr error) {
 		for range t.C {
 			fyne.Do(func() {
 				a.weather.syncAsync()
+				a.warnings.refreshAsync(false)
 			})
 		}
 	}()

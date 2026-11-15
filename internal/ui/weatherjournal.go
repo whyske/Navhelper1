@@ -69,6 +69,13 @@ type weatherTab struct {
 	status  *widget.Label
 	box     *fyne.Container
 
+	// Индикация загрузки: спиннер + текст. Показываются только пока идёт
+	// запрос, чтобы на медленном интернете было видно, что приложение живо.
+	spinner     *widget.ProgressBarInfinite
+	loading     *fyne.Container
+	refreshBtn  *widget.Button
+	citySel     *widget.Select
+
 	mu      sync.Mutex
 	running bool
 }
@@ -79,15 +86,23 @@ func newWeatherTab(a *App) *weatherTab {
 	t.status = wrapLabel("Загрузка данных…")
 	t.box = container.NewVBox()
 
-	refreshBtn := widget.NewButtonWithIcon("Обновить", theme.ViewRefreshIcon(), func() { t.syncAsync() })
-	refreshBtn.Importance = widget.HighImportance
+	// Спиннер и надпись «Загрузка…» — единственный признак того, что запрос
+	// ещё идёт. На медленном соединении без него казалось, что кнопка не работает.
+	t.spinner = widget.NewProgressBarInfinite()
+	t.loading = container.NewVBox(t.spinner, wrapLabel("Загрузка прогноза…"))
+	t.loading.Hide()
+
+	t.refreshBtn = widget.NewButtonWithIcon("Обновить", theme.ViewRefreshIcon(), func() { t.syncAsync() })
+	t.refreshBtn.Importance = widget.HighImportance
+	refreshBtn := t.refreshBtn
 
 	names := make([]string, 0, len(wjPresets))
 	for k := range wjPresets {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	citySel := widget.NewSelect(names, nil)
+	t.citySel = widget.NewSelect(names, nil)
+	citySel := t.citySel
 	citySel.PlaceHolder = "Выбрать город / акваторию…"
 	if cur := t.st.Setting(wjKeyPlace, wjDefaultName); cur != "" {
 		if _, ok := wjPresets[cur]; ok {
@@ -106,7 +121,7 @@ func newWeatherTab(a *App) *weatherTab {
 		t.syncAsync()
 	}
 
-	top := container.NewVBox(t.place, citySel, refreshBtn, t.status, widget.NewSeparator())
+	top := container.NewVBox(t.place, citySel, refreshBtn, t.loading, t.status, widget.NewSeparator())
 	scroll := container.NewVScroll(t.box)
 	t.content = container.NewBorder(top, nil, nil, nil, scroll)
 
@@ -139,7 +154,11 @@ func (t *weatherTab) reload() {
 	t.updatePlaceLabel()
 }
 
-// syncAsync — живой сбор данных в фоне, не чаще одного раза одновременно.
+// syncAsync — сбор данных в фоне, не чаще одного раза одновременно.
+//
+// Что делает индикацию: пока идёт запрос, показываются бегущая полоса
+// «Загрузка прогноза…», кнопка «Обновить» и выбор города блокируются,
+// чтобы нельзя было запустить второй запрос поверх первого.
 func (t *weatherTab) syncAsync() {
 	t.mu.Lock()
 	if t.running {
@@ -149,15 +168,28 @@ func (t *weatherTab) syncAsync() {
 	t.running = true
 	t.mu.Unlock()
 
-	t.status.SetText("Загрузка прогноза и наблюдений…")
+	fyne.Do(func() {
+		t.loading.Show()
+		t.spinner.Start()
+		t.refreshBtn.Disable()
+		t.citySel.Disable()
+		t.status.SetText("Идёт загрузка, подождите…")
+	})
+
 	go func() {
 		periods, err := t.fetch(t.historyDays())
 		fyne.Do(func() {
 			t.mu.Lock()
 			t.running = false
 			t.mu.Unlock()
+
+			t.spinner.Stop()
+			t.loading.Hide()
+			t.refreshBtn.Enable()
+			t.citySel.Enable()
+
 			if err != nil {
-				t.status.SetText("Ошибка: " + err.Error())
+				t.status.SetText("⚠ " + err.Error())
 				return
 			}
 			t.status.SetText("Обновлено: " + time.Now().Format("02.01 15:04"))
@@ -173,6 +205,18 @@ func (t *weatherTab) syncAsync() {
 // открывался очень долго: время складывалось из всех запросов подряд.
 // Теперь это время самого медленного запроса плюс один короткий второй круг
 // для METAR (он зависит от кода станции).
+// fetch собирает данные за период. Запросов всего четыре, и они идут параллельно:
+//
+//   1. Live      — прогноз на сегодня и ближайшие дни (Open-Meteo forecast);
+//   2. Archive   — что Open-Meteo прогнозировал за прошедшие дни (для проверки
+//                  оправдываемости прогноза);
+//   3. Marine    — волнение и температура воды (Open-Meteo marine), прогноз и факт;
+//   4. Observed  — фактическая погода за прошедшие дни (ERA5, архив Open-Meteo).
+//
+// ВАЖНО: раньше сюда добавлялись поиск ближайшего аэропорта и METAR
+// (aviationweather.gov). Они медленные и часто не отвечают, из-за них раздел
+// грузился по минуте. Поэтому они убраны: фактическая погода берётся из ERA5.
+// Не возвращайте их без необходимости.
 func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 	lat := t.st.SettingFloat(wjKeyLat, wjDefaultLat)
 	lon := t.st.SettingFloat(wjKeyLon, wjDefaultLon)
@@ -180,7 +224,6 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 
 	var (
 		wg       sync.WaitGroup
-		st       forecast.Station
 		live     map[time.Time]*forecast.Hour
 		arch     map[time.Time]*forecast.Hour
 		sea      map[time.Time]*forecast.Hour
@@ -190,36 +233,27 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 		liveErr  error
 	)
 
-	wg.Add(5)
+	// Один общий таймаут на все запросы: если интернет совсем плохой,
+	// раздел вернёт ошибку через 30 секунд, а не зависнет.
+	shared, cancelAll := ctx(30 * time.Second)
+	defer cancelAll()
+
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		c1, cancel := ctx(40 * time.Second)
-		defer cancel()
-		st, _ = c.NearestStation(c1, lat, lon)
+		live, off, liveErr = c.Live(shared, lat, lon)
 	}()
 	go func() {
 		defer wg.Done()
-		c2, cancel := ctx(40 * time.Second)
-		defer cancel()
-		live, off, liveErr = c.Live(c2, lat, lon)
+		arch, _ = c.Archive(shared, lat, lon, daysBack)
 	}()
 	go func() {
 		defer wg.Done()
-		c3, cancel := ctx(40 * time.Second)
-		defer cancel()
-		arch, _ = c.Archive(c3, lat, lon, daysBack)
+		sea, seaPrev, _ = c.MarineHours(shared, lat, lon, daysBack, 3)
 	}()
 	go func() {
 		defer wg.Done()
-		c4, cancel := ctx(40 * time.Second)
-		defer cancel()
-		sea, seaPrev, _ = c.MarineHours(c4, lat, lon, daysBack, 3)
-	}()
-	go func() {
-		defer wg.Done()
-		c5, cancel := ctx(40 * time.Second)
-		defer cancel()
-		observed, _ = c.Observed(c5, lat, lon, daysBack)
+		observed, _ = c.Observed(shared, lat, lon, daysBack)
 	}()
 	wg.Wait()
 
@@ -227,14 +261,9 @@ func (t *weatherTab) fetch(daysBack int) ([]wjPeriod, error) {
 		return nil, fmt.Errorf("прогноз погоды: %w", liveErr)
 	}
 
-	// METAR — второй круг, только если известен код станции.
+	// Переменная st больше не нужна (станции нет). Если понадобится снова
+	// подписать факт кодом станции — верните поиск станции выше.
 	var obs []forecast.Obs
-	if st.ICAO != "" {
-		c6, cancel := ctx(40 * time.Second)
-		obs, _ = c.METAR(c6, st.ICAO, (daysBack+1)*24)
-		cancel()
-	}
-
 
 	loc := time.FixedZone("local", off)
 	now := time.Now()

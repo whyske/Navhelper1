@@ -36,6 +36,11 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("база недоступна: %w", err)
 	}
 	s := &Store{db: db}
+	// ВАЖНО: каждая миграция обязана вызываться здесь, по порядку.
+	// migrateV4 (store4.go) добавляет колонку cal_notes.notify, region/url у
+	// warnings и таблицы снимков прогноза. Без неё падают тесты и не
+	// сохраняются заметки с напоминанием. Миграции идемпотентны — повторный
+	// запуск безопасен.
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
