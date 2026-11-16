@@ -78,6 +78,17 @@ func newWarningsTab(a *App) *warningsTab {
 	t := &warningsTab{a: a}
 	t.status = wrapLabel("")
 
+	// ── ВАЖНО: порядок создания объектов критичен ──
+	// SetSelected у Select СРАЗУ вызывает обработчик OnChanged. Раньше
+	// обработчик обращался к t.issuesBox и t.filter, которых ещё не было,
+	// и приложение падало с nil pointer уже на запуске.
+	// Поэтому сначала создаём всё, что нужно обработчикам, и только потом
+	// задаём выбранное значение.
+	t.issuesBox = container.NewVBox()
+	t.filter = widget.NewEntry()
+	t.filter.SetPlaceHolder("Поиск: номер выпуска, карты, слово…")
+	t.filter.OnChanged = func(string) { t.rebuildIssues() }
+
 	// ── 1. Районы ──
 	names := []string{allRegionsKey}
 	for _, r := range navwarn.Regions {
@@ -88,6 +99,7 @@ func newWarningsTab(a *App) *warningsTab {
 		_ = a.St.SetSetting("im.region", s)
 		t.rebuildIssues()
 	})
+
 	sel := a.St.Setting("im.region", allRegionsKey)
 	ok := false
 	for _, n := range names {
@@ -100,16 +112,12 @@ func newWarningsTab(a *App) *warningsTab {
 		sel = allRegionsKey
 	}
 	t.curRegion = regionKeyFor(sel)
+	// Теперь обработчик безопасен: issuesBox и filter уже существуют.
 	t.regionSel.SetSelected(sel)
-
-	t.filter = widget.NewEntry()
-	t.filter.SetPlaceHolder("Поиск: номер выпуска, карты, слово…")
-	t.filter.OnChanged = func(string) { t.rebuildIssues() }
 
 	btn := widget.NewButtonWithIcon("Обновить", theme.ViewRefreshIcon(), func() { t.refreshAsync(true) })
 	btn.Importance = widget.HighImportance
 
-	t.issuesBox = container.NewVBox()
 	scroll := container.NewVScroll(t.issuesBox)
 
 	top := container.NewVBox(
@@ -159,6 +167,12 @@ type issue struct {
 
 // rebuildIssues строит список выпусков выбранного района.
 func (t *warningsTab) rebuildIssues() {
+	// Страховка: обработчики Select/Entry могут сработать раньше, чем
+	// поля созданы. Молча выходим вместо падения (см. комментарий в
+	// newWarningsTab о порядке инициализации).
+	if t.issuesBox == nil || t.filter == nil || t.regionSel == nil {
+		return
+	}
 	t.issuesBox.Objects = nil
 
 	q := lower(t.filter.Text)
