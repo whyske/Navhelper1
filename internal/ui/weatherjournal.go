@@ -362,47 +362,95 @@ func (t *weatherTab) render(periods []wjPeriod) {
 	t.box.Refresh()
 }
 
+// card — карточка одних суток.
+//
+// По умолчанию СВЁРНУТА: видно только период и одну сводку в строку.
+// Нажатие на заголовок разворачивает полный прогноз, факт и оправдываемость.
+// Так сделано потому, что развёрнутые карточки за 30 дней занимали
+// несколько экранов и до нужных суток приходилось долго листать.
 func (t *weatherTab) card(p wjPeriod) fyne.CanvasObject {
-	rows := []fyne.CanvasObject{headRow(p.Title, p.Label)}
+	// ── Содержимое, которое прячется: прогноз, факт, оправдываемость ──
+	var body []fyne.CanvasObject
+
 	for _, l := range p.Forecast {
-		rows = append(rows, fieldRow(l.Label, l.Value))
+		body = append(body, fieldRow(l.Label, l.Value))
 	}
+
 	if p.HasFact {
-		rows = append(rows, widget.NewSeparator())
+		body = append(body, widget.NewSeparator())
 		factHead := "Факт"
 		if p.Station != "" {
 			factHead += " (" + p.Station + ")"
 		}
-		rows = append(rows, bold(factHead+":"))
+		body = append(body, bold(factHead+":"))
 
-		// Факт одной строкой в формате судового журнала.
 		if p.FactText != "" {
 			fact := wrapLabel(p.FactText)
 			fact.TextStyle = fyne.TextStyle{Bold: true}
-			rows = append(rows, fact)
+			body = append(body, fact)
 		} else {
 			for _, l := range p.Fact {
-				rows = append(rows, fieldRow(l.Label, l.Value))
+				body = append(body, fieldRow(l.Label, l.Value))
 			}
 		}
 
 		if p.Verdict.Percent >= 0 {
-			pct := widget.NewLabelWithStyle(fmt.Sprintf("Оправдываемость прогноза: %d%%", p.Verdict.Percent), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-			rows = append(rows, pct)
+			body = append(body, widget.NewLabelWithStyle(
+				fmt.Sprintf("Оправдываемость прогноза: %d%%", p.Verdict.Percent),
+				fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 			for _, c := range p.Verdict.Checks {
 				mark := "✗"
 				if c.OK {
 					mark = "✓"
 				}
-				rows = append(rows, wrapLabel(fmt.Sprintf("%s %s: прогноз — %s; факт — %s", mark, c.Name, c.Forecast, c.Fact)))
+				body = append(body, wrapLabel(fmt.Sprintf(
+					"%s %s: прогноз — %s; факт — %s", mark, c.Name, c.Forecast, c.Fact)))
 			}
 		}
 	}
+
+	details := container.NewVBox(body...)
+	details.Hide()
+
+	// ── Короткая сводка в одну строку (видна всегда) ──
+	summary := ""
+	for _, l := range p.Forecast {
+		switch l.Label {
+		case "Ветер":
+			summary += l.Value + ". "
+		case "Видимость":
+			summary += "Вид. " + l.Value + ". "
+		}
+	}
+	summaryLabel := wrapLabel(strings.TrimSpace(summary))
+	summaryLabel.Importance = widget.LowImportance
+
+	// ── Заголовок-кнопка: период + метка, нажатие переключает ──
+	title := bold(p.Title + "  " + p.Label)
+	chevron := widget.NewLabelWithStyle("▸", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
+
+	header := container.NewBorder(nil, nil, nil, chevron, title)
+
+	toggle := widget.NewButton("", func() {
+		if details.Visible() {
+			details.Hide()
+			chevron.SetText("▸")
+		} else {
+			details.Show()
+			chevron.SetText("▾")
+		}
+	})
+	toggle.Importance = widget.LowImportance
+	// Кнопка прозрачная на всю ширину: нажимать удобно в любом месте заголовка.
+	headerWithToggle := container.NewStack(header, toggle)
+
+	content := container.NewVBox(headerWithToggle, summaryLabel, details)
+
 	bg := canvas.NewRectangle(color.NRGBA{0xff, 0xff, 0xff, 0xff})
 	bg.CornerRadius = 10
 	bg.StrokeColor = color.NRGBA{0xd3, 0xdc, 0xe6, 0xff}
 	bg.StrokeWidth = 1
-	return container.NewPadded(container.NewStack(bg, container.NewPadded(container.NewVBox(rows...))))
+	return container.NewPadded(container.NewStack(bg, container.NewPadded(content)))
 }
 
 func parseFloatWJ(s string) (float64, error) {

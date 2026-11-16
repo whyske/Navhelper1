@@ -1,24 +1,37 @@
-// Раздел «ИМ УНиО».
+// Раздел «ИМ УНиО» — извещения мореплавателям.
 //
 // ═══════════════════════════════════════════════════════════════════════════
-//  СТРУКТУРА РАЗДЕЛА
+//  СТРУКТУРА (как просил пользователь)
 // ═══════════════════════════════════════════════════════════════════════════
-// Два выпадающих списка:
 //
-//   1. ТИП — НАВАРЕА / ПРИП / НАВИП (с русскими пояснениями).
-//   2. ВЫПУСК — номер выпуска внутри выбранного типа, например «244/2026».
-//      Номер берётся из самого текста извещения (см. IssueNumber в rus.go).
-//
-// Ниже — список извещений выбранного выпуска. Нажатие открывает полный текст.
-//
-// Все названия и заголовки по-русски: перевод делает пакет navwarn (rus.go).
-// Тело сообщения остаётся на языке оригинала — машинный перевод морских
-// текстов ненадёжен, а ошибка в координатах или времени опасна.
+//  1. Выпадающий список РАЙОНОВ (бассейны: Чёрное/Азовское, Балтика, Арктика…).
+//  2. Под ним — СПИСОК ВЫПУСКОВ этого района в виде сворачиваемых карточек.
+//  3. Нажатие на выпуск разворачивает его содержимое: группы ПРИП / НАВИП /
+//     НАВАРЕА (показываются только те типы, что реально есть в базе).
+//  4. Нажатие на тип ОТКРЫВАЕТ ПОЛНЫЙ ТЕКСТ извещения с кнопкой «Скачать PDF».
+//  5. Кнопка «Скачать PDF» на карточке выпуска сохраняет весь выпуск.
 //
 // ═══════════════════════════════════════════════════════════════════════════
-//  ВАЖНО: НЕ УДАЛЯТЬ ЭТОТ ФАЙЛ
+//  ПОЧЕМУ КАРТОЧКИ, А НЕ widget.List
 // ═══════════════════════════════════════════════════════════════════════════
-// На него ссылаются App.warnings в app.go и уведомления о новых выпусках
+// Раньше список строился через widget.List с многострочными подписями.
+// У widget.List высота строки фиксирована, поэтому длинные названия районов
+// (например «НАВАРЕА вып. 99/2026 — РАЙОН XIII — Северо-западная Пацифика
+// (Россия)») залезали на соседние строки — именно это было видно на
+// скриншоте. Теперь каждая запись — карточка в VBox: высота считается
+// естественно, наложений быть не может.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+//  ЯЗЫК ТЕКСТА
+// ═══════════════════════════════════════════════════════════════════════════
+// Заголовки и навигация — по-русски. Сам ТЕКСТ извещения выводится на языке
+// первоисточника (английский у НАВАРЕА/прибрежных служб, русский у ГУНиО):
+// машинный перевод координат, времени и названий объектов недопустим.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+//  НЕ УДАЛЯТЬ ФАЙЛ
+// ═══════════════════════════════════════════════════════════════════════════
+// На него ссылаются App.warnings (app.go) и уведомления о новых выпусках
 // (notify.go, pushNewWarnings).
 package ui
 
@@ -32,6 +45,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"ru.navhelper/internal/navwarn"
@@ -43,288 +57,288 @@ type warningsTab struct {
 	a       *App
 	content fyne.CanvasObject
 	status  *widget.Label
-	list    *widget.List
 
-	// Полный набор, загруженный из базы.
+	// Полный набор из базы.
 	all []store.WarningRow
 
-	// Отфильтрованный набор, который сейчас показан в списке.
-	shown []store.WarningRow
+	// Текущий выбранный бассейн (ключ из navwarn.Regions, "" — все).
+	curRegion string
 
-	// Выпадающие списки.
-	kindSel  *widget.Select
-	issueSel *widget.Select
-
-	// Текущее выделение.
-	curKind  navwarn.Kind
-	curIssue string
-
-	filter *widget.Entry
+	regionSel *widget.Select
+	issuesBox *fyne.Container
+	filter    *widget.Entry
 
 	mu      sync.Mutex
 	running bool
 }
 
-// allIssuesKey — пункт списка выпусков «показать все».
-const allIssuesKey = "Все выпуски"
+const allRegionsKey = "Все районы"
 
 func newWarningsTab(a *App) *warningsTab {
 	t := &warningsTab{a: a}
 	t.status = wrapLabel("")
 
-	t.list = widget.NewList(
-		func() int { return len(t.shown) },
-		func() fyne.CanvasObject { return wrapLabel("") },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			w := t.shown[i]
-			o.(*widget.Label).SetText(warningLine(w))
-		},
-	)
-	t.list.OnSelected = func(i widget.ListItemID) {
-		t.showFull(t.shown[i])
-		t.list.UnselectAll()
+	// ── 1. Районы ──
+	names := []string{allRegionsKey}
+	for _, r := range navwarn.Regions {
+		names = append(names, r.Name)
 	}
-
-	// ── Список 1: тип извещения ──
-	t.kindSel = widget.NewSelect(nil, func(s string) {
-		t.curKind = kindFromLabel(s)
+	t.regionSel = widget.NewSelect(names, func(s string) {
+		t.curRegion = regionKeyFor(s)
+		_ = a.St.SetSetting("im.region", s)
 		t.rebuildIssues()
 	})
-	t.kindSel.PlaceHolder = "Тип извещения"
-
-	// ── Список 2: номер выпуска ──
-	t.issueSel = widget.NewSelect(nil, func(s string) {
-		t.curIssue = s
-		t.applyFilter()
-	})
-	t.issueSel.PlaceHolder = "Выпуск"
+	sel := a.St.Setting("im.region", allRegionsKey)
+	ok := false
+	for _, n := range names {
+		if n == sel {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		sel = allRegionsKey
+	}
+	t.curRegion = regionKeyFor(sel)
+	t.regionSel.SetSelected(sel)
 
 	t.filter = widget.NewEntry()
-	t.filter.SetPlaceHolder("Поиск: номер района, карты, слово…")
-	t.filter.OnChanged = func(string) { t.applyFilter() }
+	t.filter.SetPlaceHolder("Поиск: номер выпуска, карты, слово…")
+	t.filter.OnChanged = func(string) { t.rebuildIssues() }
 
-	btn := widget.NewButton("Обновить", func() { t.refreshAsync(true) })
+	btn := widget.NewButtonWithIcon("Обновить", theme.ViewRefreshIcon(), func() { t.refreshAsync(true) })
 	btn.Importance = widget.HighImportance
+
+	t.issuesBox = container.NewVBox()
+	scroll := container.NewVScroll(t.issuesBox)
 
 	top := container.NewVBox(
 		bold("Извещения мореплавателям"),
-		t.kindSel,
-		t.issueSel,
+		t.regionSel,
 		container.NewBorder(nil, nil, nil, btn, t.filter),
 		t.status,
 		widget.NewSeparator(),
 	)
-	t.content = container.NewBorder(top, nil, nil, nil, t.list)
+	t.content = container.NewBorder(top, nil, nil, nil, scroll)
 
 	t.reload()
 	return t
 }
 
-// warningLine — строка списка: тип, выпуск, русское название района.
-func warningLine(w store.WarningRow) string {
-	k := navwarn.DetectKind(toWarning(w))
-	issue := navwarn.IssueNumber(toWarning(w))
-
-	area := navwarn.AreaRU(w.Area + " " + w.Title)
-	if area == "" {
-		area = w.Area
+// regionKeyFor переводит название бассейна в ключ региона.
+func regionKeyFor(name string) string {
+	if name == "" || name == allRegionsKey {
+		return ""
 	}
-	title := navwarn.TranslateTitle(w.Title)
-	if title == w.Title && area != "" {
-		title = "" // не дублируем английский заголовок
+	for _, r := range navwarn.Regions {
+		if r.Name == name {
+			return r.Key
+		}
 	}
-
-	parts := []string{k.RU()}
-	if issue != "" {
-		parts = append(parts, "вып. "+issue)
-	}
-	parts = append(parts, "— "+area)
-	if title != "" {
-		parts = append(parts, "("+title+")")
-	}
-	return strings.Join(parts, " ")
-}
-
-// toWarning переводит строку базы в тип navwarn.Warning для классификации.
-func toWarning(w store.WarningRow) navwarn.Warning {
-	return navwarn.Warning{
-		Area:   w.Area,
-		Number: w.Number,
-		Year:   w.Year,
-		Title:  w.Title,
-		Body:   w.Body,
-		Region: w.Region,
-		Source: w.Source,
-	}
-}
-
-// showFull открывает полный текст извещения.
-func (t *warningsTab) showFull(w store.WarningRow) {
-	warn := toWarning(w)
-	kind := navwarn.DetectKind(warn).RU()
-	issue := navwarn.IssueNumber(warn)
-	area := navwarn.AreaRU(w.Area + " " + w.Title)
-	if area == "" {
-		area = w.Area
-	}
-
-	header := bold(fmt.Sprintf("%s, выпуск %s", kind, issue))
-	sub := wrapLabel(area)
-	sub.Importance = widget.LowImportance
-
-	// Тело — моноширинным шрифтом, как в оригинале: важны отступы и координаты.
-	body := widget.NewLabelWithStyle(w.Body, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
-	body.Wrapping = fyne.TextWrapWord
-
-	meta := wrapLabel("Источник: " + w.Source + ", загружено " +
-		w.FetchedAt.Local().Format("02.01.2006 15:04"))
-
-	sc := container.NewVScroll(container.NewVBox(header, sub, widget.NewSeparator(), body, meta))
-	d := dialog.NewCustom(fmt.Sprintf("%s %s", kind, issue), "Закрыть", sc, t.a.Win)
-	d.Resize(fyne.NewSize(400, 600))
-	d.Show()
+	return ""
 }
 
 func (t *warningsTab) reload() {
 	t.all, _ = t.a.St.Warnings()
-	t.rebuildKinds()
-}
-
-// rebuildKinds пересобирает список типов по фактически имеющимся данным.
-func (t *warningsTab) rebuildKinds() {
-	groups := navwarn.GroupByKind(t.rowsToWarnings())
-
-	var labels []string
-	for _, g := range groups {
-		labels = append(labels, g.TitleRU)
-	}
-	if len(labels) == 0 {
-		labels = []string{
-			"НАВАРЕА — океанские предупреждения",
-			"ПРИП — прибрежные предупреждения",
-			"НАВИП — навигационные извещения",
-		}
-	}
-	t.kindSel.Options = labels
-	t.kindSel.Refresh()
-
-	// Сохраняем выбор, если он ещё существует.
-	want := kindTitleRU(t.curKind)
-	found := false
-	for _, l := range labels {
-		if l == want {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.curKind = navwarn.KindNavarea
-		if len(groups) > 0 {
-			t.curKind = groups[0].Kind
-		}
-		t.kindSel.SetSelected(kindTitleRU(t.curKind))
-	} else {
-		t.kindSel.SetSelected(want)
-	}
 	t.rebuildIssues()
 }
 
-// kindTitleRU возвращает русский заголовок группы для типа.
-func kindTitleRU(k navwarn.Kind) string {
-	switch k {
-	case navwarn.KindNavarea:
-		return "НАВАРЕА — океанские предупреждения"
-	case navwarn.KindPrip:
-		return "ПРИП — прибрежные предупреждения"
-	case navwarn.KindNavip:
-		return "НАВИП — навигационные извещения"
+// toWarning переводит строку базы в тип navwarn.Warning.
+func toWarning(w store.WarningRow) navwarn.Warning {
+	return navwarn.Warning{
+		Area: w.Area, Number: w.Number, Year: w.Year,
+		Title: w.Title, Body: w.Body, Region: w.Region, Source: w.Source,
 	}
-	return string(k)
 }
 
-// kindFromLabel переводит выбранную подпись обратно в тип.
-func kindFromLabel(label string) navwarn.Kind {
-	switch {
-	case strings.HasPrefix(label, "НАВАРЕА"):
-		return navwarn.KindNavarea
-	case strings.HasPrefix(label, "ПРИП"):
-		return navwarn.KindPrip
-	case strings.HasPrefix(label, "НАВИП"):
-		return navwarn.KindNavip
-	}
-	return navwarn.KindNavarea
+// issue — один выпуск: все его извещения, сгруппированные по типу.
+type issue struct {
+	Number   string // «244/2026»
+	Messages []store.WarningRow
 }
 
-// rebuildIssues пересобирает список выпусков для выбранного типа.
+// rebuildIssues строит список выпусков выбранного района.
 func (t *warningsTab) rebuildIssues() {
-	var opts []string
-	seen := map[string]bool{}
-	for _, w := range t.all {
-		if navwarn.DetectKind(toWarning(w)) != t.curKind {
-			continue
-		}
-		issue := navwarn.IssueNumber(toWarning(w))
-		if issue == "" || seen[issue] {
-			continue
-		}
-		seen[issue] = true
-		opts = append(opts, issue)
-	}
-	// Новые выпуски сверху: номер года/серии сортируем по убыванию.
-	sort.Slice(opts, func(i, j int) bool { return opts[i] > opts[j] })
+	t.issuesBox.Objects = nil
 
-	withAll := append([]string{allIssuesKey}, opts...)
-	t.issueSel.Options = withAll
-	t.issueSel.Refresh()
-
-	if seen[t.curIssue] {
-		t.issueSel.SetSelected(t.curIssue)
-	} else {
-		t.curIssue = allIssuesKey
-		t.issueSel.SetSelected(allIssuesKey)
-	}
-	t.applyFilter()
-}
-
-// rowsToWarnings переводит строки базы в тип navwarn.Warning.
-func (t *warningsTab) rowsToWarnings() []navwarn.Warning {
-	out := make([]navwarn.Warning, 0, len(t.all))
-	for _, w := range t.all {
-		out = append(out, toWarning(w))
-	}
-	return out
-}
-
-// applyFilter отбирает извещения по типу, выпуску и строке поиска.
-func (t *warningsTab) applyFilter() {
 	q := lower(t.filter.Text)
-	t.shown = t.shown[:0]
+
+	// Собираем выпуски: ключ = номер/год. В выпуск попадают все извещения
+	// этого номера, независимо от типа (НАВАРЕА/ПРИП/НАВИП).
+	byIssue := map[string]*issue{}
 	for _, w := range t.all {
-		wn := toWarning(w)
-		if navwarn.DetectKind(wn) != t.curKind {
-			continue
-		}
-		if t.curIssue != "" && t.curIssue != allIssuesKey &&
-			navwarn.IssueNumber(wn) != t.curIssue {
+		if t.curRegion != "" && w.Region != t.curRegion {
 			continue
 		}
 		if q != "" && !containsFold(w.Area+" "+w.Number+" "+w.Title+" "+w.Body, q) {
 			continue
 		}
-		t.shown = append(t.shown, w)
-	}
-	// Свежие выпуски сверху.
-	sort.SliceStable(t.shown, func(i, j int) bool {
-		if t.shown[i].Year != t.shown[j].Year {
-			return t.shown[i].Year > t.shown[j].Year
+		wn := toWarning(w)
+		num := navwarn.IssueNumber(wn)
+		if num == "" {
+			num = w.Number
 		}
-		return t.shown[i].Number > t.shown[j].Number
-	})
-	t.list.Refresh()
-
-	if len(t.shown) == 0 {
-		t.status.SetText("Нет извещений выбранного типа. Нажмите «Обновить».")
+		if num == "" {
+			continue
+		}
+		it, ok := byIssue[num]
+		if !ok {
+			it = &issue{Number: num}
+			byIssue[num] = it
+		}
+		it.Messages = append(it.Messages, w)
 	}
+
+	// Сортировка: свежие выпуски сверху. Сравниваем номер как число, а при
+	// равенстве — год, чтобы «99/2026» не оказывался выше «950/2026».
+	list := make([]*issue, 0, len(byIssue))
+	for _, it := range byIssue {
+		list = append(list, it)
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		ni, yi := splitIssue(list[i].Number)
+		nj, yj := splitIssue(list[j].Number)
+		if yi != yj {
+			return yi > yj
+		}
+		return ni > nj
+	})
+
+	if len(list) == 0 {
+		t.status.SetText("Нет извещений по выбранному району.")
+		t.issuesBox.Refresh()
+		return
+	}
+
+	for _, it := range list {
+		t.issuesBox.Add(t.issueCard(it))
+	}
+	t.status.SetText(fmt.Sprintf("Выпусков: %d, извещений: %d", len(list), len(t.all)))
+	t.issuesBox.Refresh()
+}
+
+// splitIssue разбирает «244/2026» на число и год.
+func splitIssue(s string) (num, year int) {
+	parts := strings.SplitN(s, "/", 2)
+	fmt.Sscanf(parts[0], "%d", &num)
+	if len(parts) == 2 {
+		fmt.Sscanf(parts[1], "%d", &year)
+		if year < 100 {
+			year += 2000
+		}
+	}
+	return
+}
+
+// issueCard — сворачиваемая карточка выпуска.
+//
+// Свёрнутая: «Выпуск 244/2026 · РАЙОН III …» и стрелка.
+// Развёрнутая: строки типов (НАВАРЕА / ПРИП / НАВИП) и кнопка «Скачать PDF».
+func (t *warningsTab) issueCard(it *issue) fyne.CanvasObject {
+	// Заголовок: район первого извещения выпуска.
+	area := ""
+	if len(it.Messages) > 0 {
+		area = navwarn.AreaRU(it.Messages[0].Area + " " + it.Messages[0].Title)
+		if area == "" {
+			area = it.Messages[0].Area
+		}
+	}
+
+	head := bold(fmt.Sprintf("Выпуск %s", it.Number))
+	sub := wrapLabel(area)
+	sub.Importance = widget.LowImportance
+
+	chevron := widget.NewLabelWithStyle("▸", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
+
+	// ── Содержимое: типы, которые реально есть в этом выпуске ──
+	details := container.NewVBox()
+	groups := navwarn.GroupByKind(rowsToWarnings(it.Messages))
+	for _, g := range groups {
+		g := g
+		row := widget.NewButton(g.TitleRU, func() {
+			t.openMessage(g.Warnings[0], it.Number)
+		})
+		row.Alignment = widget.ButtonAlignLeading
+		details.Add(row)
+	}
+	if len(groups) == 0 {
+		details.Add(wrapLabel("Нет данных"))
+	}
+
+	// Кнопка «Скачать PDF» — сохраняет ВЕСЬ выпуск.
+	pdfBtn := widget.NewButtonWithIcon("Скачать PDF", theme.DownloadIcon(), func() {
+		t.saveIssuePDF(it)
+	})
+	pdfBtn.Importance = widget.LowImportance
+	details.Add(widget.NewSeparator())
+	details.Add(pdfBtn)
+
+	details.Hide()
+
+	toggle := widget.NewButton("", func() {
+		if details.Visible() {
+			details.Hide()
+			chevron.SetText("▸")
+		} else {
+			details.Show()
+			chevron.SetText("▾")
+		}
+	})
+	toggle.Importance = widget.LowImportance
+
+	titleRow := container.NewBorder(nil, nil, nil, chevron, container.NewVBox(head, sub))
+	inner := container.NewVBox(container.NewStack(titleRow, toggle), details)
+
+	bg := newCardBG()
+	return container.NewPadded(container.NewStack(bg, container.NewPadded(inner)))
+}
+
+// rowsToWarnings переводит строки базы в navwarn.Warning.
+func rowsToWarnings(rows []store.WarningRow) []navwarn.Warning {
+	out := make([]navwarn.Warning, 0, len(rows))
+	for _, w := range rows {
+		out = append(out, toWarning(w))
+	}
+	return out
+}
+
+// openMessage показывает полный текст извещения.
+func (t *warningsTab) openMessage(w navwarn.Warning, issueNum string) {
+	kind := navwarn.DetectKind(w).RU()
+	area := navwarn.AreaRU(w.Area + " " + w.Title)
+	if area == "" {
+		area = w.Area
+	}
+
+	head := bold(fmt.Sprintf("%s, выпуск %s", kind, issueNum))
+	areaLbl := wrapLabel(area)
+	areaLbl.Importance = widget.LowImportance
+
+	// Блок под заголовком: район и, если удалось, перевод заголовка по-русски.
+	subBox := container.NewVBox(areaLbl)
+	if tr := navwarn.TranslateTitle(w.Title); tr != w.Title {
+		trLbl := wrapLabel(tr)
+		trLbl.TextStyle = fyne.TextStyle{Italic: true}
+		subBox.Add(trLbl)
+	}
+
+	// Тело — моноширинно и без перевода: важны отступы и координаты.
+	body := widget.NewLabelWithStyle(w.Body, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
+	body.Wrapping = fyne.TextWrapWord
+
+	meta := wrapLabel("Источник: " + w.Source)
+	meta.Importance = widget.LowImportance
+
+	dl := widget.NewButtonWithIcon("Скачать PDF", theme.DownloadIcon(), func() {
+		t.saveMessagePDF(w, issueNum)
+	})
+	dl.Importance = widget.HighImportance
+
+	content := container.NewVScroll(container.NewVBox(
+		head, subBox, widget.NewSeparator(), body, widget.NewSeparator(), meta, dl))
+	d := dialog.NewCustom(fmt.Sprintf("%s %s", kind, issueNum), "Закрыть", content, t.a.Win)
+	d.Resize(fyne.NewSize(400, 600))
+	d.Show()
 }
 
 // refreshAsync загружает извещения. Без force — не чаще раза в 30 минут.
@@ -363,7 +377,7 @@ func (t *warningsTab) refreshAsync(force bool) {
 			})
 		}
 
-		// Снимок «до» — чтобы понять, какие выпуски новые (для уведомления).
+		// Снимок «до» — чтобы определить, какие выпуски новые (для уведомления).
 		before := map[string]bool{}
 		if old, err := t.a.St.Warnings(); err == nil {
 			for _, w := range old {
@@ -374,7 +388,6 @@ func (t *warningsTab) refreshAsync(force bool) {
 		// Пустой ответ не затирает кэш (вероятно, сменилась вёрстка сайта).
 		if len(rows) > 0 {
 			_ = t.a.St.SaveWarnings("navwarn", rows)
-			// Уведомление о новых выпусках (если включено в настройках).
 			t.a.notifier.pushNewWarnings(before, rows)
 		}
 

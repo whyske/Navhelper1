@@ -137,8 +137,15 @@ func TestSummarizeJournal(t *testing.T) {
 	if f.SeaLo != 4 || f.SeaHi != 5 {
 		t.Errorf("волнение %d–%d", f.SeaLo, f.SeaHi)
 	}
-	if f.VisLo != 20 || f.VisHi < 25 || f.VisHi > 40 {
-		t.Errorf("видимость %v–%v", f.VisLo, f.VisHi)
+	// Видимость теперь ОДНО типичное значение (медиана), а не диапазон:
+	// минимум за сутки почти всегда приходится на один пасмурный час и
+	// давал нелепое «5 кбт» при ясной погоде. Худшее значение — отдельно,
+	// в VisMinCab, и выводится припиской «местами до …».
+	if !f.HasVis || f.VisLo != 30 || f.VisLo != f.VisHi {
+		t.Errorf("видимость (медиана) %v–%v, ожидалось 30–30", f.VisLo, f.VisHi)
+	}
+	if !f.HasVisMin || f.VisMinCab <= 0 || f.VisMinCab > f.VisLo {
+		t.Errorf("минимум видимости %v (HasVisMin=%v)", f.VisMinCab, f.HasVisMin)
 	}
 	lines := ForecastLines(f)
 	txt := ""

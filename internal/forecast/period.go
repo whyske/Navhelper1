@@ -45,8 +45,14 @@ type Forecast struct {
 	WaveLo         float64
 	WaveHi         float64
 	HasSea         bool
-	VisLo, VisHi   float64 // кбт
+	VisLo, VisHi   float64 // кбт — типичная (медианная) видимость за период
 	HasVis         bool
+	// VisMinCab — худшая видимость за период, кбт. Выводится отдельно припиской
+	// «местами до …» и только если действительно хуже типичной. Нужна потому,
+	// что минимум за сутки почти всегда попадает на один пасмурный час и,
+	// если брать его как основное значение, получается «5 кбт» при ясной погоде.
+	VisMinCab float64
+	HasVisMin bool
 	Cloud          int
 	HasCloud       bool
 	Phens          []Phen
@@ -132,7 +138,12 @@ func Summarize(hours []Hour, start, end time.Time, loc *time.Location) Forecast 
 			waves = append(waves, h.Wave)
 		}
 		if h.HasVis {
-			vis = append(vis, math.Min(h.VisM, VisMaxM))
+			// ВАЖНО: видимость НЕ обрезаем здесь потолком VisMaxM.
+			// Open-Meteo отдаёт значения до 59 км; если обрезать каждое
+			// значение до 10 км ещё до статистики, то медиана упирается в
+			// потолок и получается «50 кбт и более», а минимум за сутки
+			// (один туманный час) даёт «5 кбт» даже при ясной погоде.
+			vis = append(vis, h.VisM)
 		}
 		if h.HasTemp {
 			if isDay(h.T, loc) {
@@ -187,11 +198,15 @@ func Summarize(hours []Hour, start, end time.Time, loc *time.Location) Forecast 
 		f.SeaLo, f.SeaHi = SeaState(lo), SeaState(hi)
 	}
 	if len(vis) > 0 {
+		// Видимость в журнале — это ТИПИЧНОЕ значение за период, а не худшее.
+		// Берём медиану как основное и отдельно запоминаем минимум: если он
+		// заметно ниже (туман/ливень местами), пишем «местами до …».
+		med := VisCables(Percentile(vis, 50))
+		f.VisLo, f.VisHi, f.HasVis = med, med, true
+
 		lo, _ := minMax(vis)
-		f.VisLo, f.VisHi, f.HasVis = VisCables(lo), VisCables(Percentile(vis, 50)), true
-		if f.VisHi < f.VisLo {
-			f.VisHi = f.VisLo
-		}
+		f.VisMinCab = VisCables(lo)
+		f.HasVisMin = true
 	}
 	if len(clouds) > 0 {
 		best, bn := 0, -1

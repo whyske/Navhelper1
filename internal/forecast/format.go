@@ -53,7 +53,12 @@ func ForecastLines(f Forecast) []Line {
 			rangeInt(f.SeaLo, f.SeaHi), waveRange(f.WaveLo, f.WaveHi))})
 	}
 	if f.HasVis {
-		out = append(out, Line{"Видимость", FmtCabRange(f.VisLo, f.VisHi)})
+		// Типичная видимость; если местами заметно хуже — дописываем приписку.
+		v := FmtCab(f.VisLo)
+		if f.HasVisMin && f.VisMinCab < f.VisLo && f.VisMinCab < 20 {
+			v += ", местами до " + FmtCab(f.VisMinCab)
+		}
+		out = append(out, Line{"Видимость", v})
 	}
 	if f.HasCloud {
 		w := CloudText(f.Cloud)
